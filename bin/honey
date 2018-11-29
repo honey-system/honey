@@ -1,0 +1,269 @@
+#!/usr/bin/env bash
+
+SERVER_CONF="/honey/conf/server.conf"
+RIG_CONF="/honey/conf/rig.conf"
+RIG_CONF_EX="/honey/conf/rig.conf.example"
+LOGS_DIR="/honey/log/"
+
+. colors
+. $RIG_CONF
+. $SERVER_CONF
+
+function preboot() {
+	tzupdate #auto update time zone
+	rm -r '/honey/conf/System Volume Information'
+	convertToUnixConf # convert after change files in win
+	[[ -z $HONEY_SERVER ]] && echo -e "${RED}No find file - /honey/conf/server.conf${NOCOLOR} please create it" && exit 1
+
+	echo -e "Trying first connect to server"
+	agent log 0 "Rig booted"
+	
+	agent getconf
+	[[ $? -ne 0 ]] &&
+			echo -e "${RED}Falled preboot${NOCOLOR} The boot will continue with the old configuration"
+			
+	agent start
+			
+	NVI=`gpu-detect NVIDIA`
+	AMD=`gpu-detect AMD`
+	
+	echo "Detected $NVI NVIDIA cards"
+	echo "Detected $AMD AMD cards"
+	
+	rm /etc/X11/xorg.conf
+	
+	[[ $AMD > 0 ]] && savePPTables
+	
+	if [[ $NVI > 0 ]]; then
+		echo "Edit xorg for NVIDIA"
+		modprobe nvidia_drm modeset=1
+		modprobe nvidia
+		echo "`nvidia-xorg`"
+		nvidia-xconfig --enable-all-gpus --cool-bits=31 --preserve-driver-name --allow-empty-initial-configuration
+		
+		echo "Start xorg for NVIDIA"
+		startxfce4
+		xset -dpms #disable black screen
+		exit
+	fi
+	
+	if [[ $AMD > 0 ]]; then
+		echo "Edit xorg for AMD"
+		modprobe amdgpu
+		
+		if [ $GPU_COUNT_NVIDIA -eq 0 ]; then
+			echo "Copying xorg for AMD"
+			cp /honey/etc/xorg.conf.amd /etc/X11/xorg.conf
+		fi
+	fi
+	
+	boot
+}
+
+
+function boot() {
+	echo -e "Lets boot"
+	oc
+	fan start
+	watcher start
+	miner start
+	wd start
+	echo -e "START MONITOR after:"
+	for (( i=5; i>0; i-- ));
+	do
+		echo $i;
+		sleep 1s;
+	done
+	monitor
+}
+
+function updateConf() {
+	echo -e "Lets update configuretion rig"
+	miner stop
+	agent getconf
+	[[ $? -ne 0 ]] &&
+			echo -e "${RED}Falled updateConf${NOCOLOR}"
+	oc
+	miner start
+}
+
+function monitor() {
+	monitorStop
+
+	echo -e "Lets monitor"
+	tmux new-session \; \
+	send-keys 'honey loopcommand miner' C-m \; \
+	split-window -v \; \
+	send-keys 'honey loopcommand agent' C-m \; \
+	split-window -h \; \
+	send-keys 'honey info' C-m \; 
+}
+
+function monitorStop() {
+	tmux kill-session
+}
+
+function onStartX() {
+	tilda -c 'honey boot'
+}
+
+function beforeCopy() {
+	miner stop
+	agent stop
+	clearLogs
+	clearUserInfo
+	cat $RIG_CONF_EX > $RIG_CONF
+	echo -e "${GREEN}Ready to copy${NOCOLOR}" 
+}
+
+function clearUserInfo() {
+   	
+	echo "" > /root/.bash_history
+	echo "" > /home/work/.bash_history
+	rm -rf /var/tmp/*
+	
+	echo -e "${GREEN}User info clear ${NOCOLOR}" 
+   
+}
+
+function clearLogs() {
+   	
+	find /honey/miners -name '*_log.txt' -exec rm -f {} \;
+	find /honey/log -type f -exec rm -f {} \;
+	rm -r /var/log/*
+	mkdir -p /var/log/journal
+	rm "/tmp/miner.7z"
+	rm "/tmp/state"
+
+	echo -e "${GREEN}All logs clear ${NOCOLOR}" 
+   
+}
+
+function upgrade() {
+	nohup bash -c '
+				miner stop
+				cd /honey
+				git reset --hard origin/master
+				git pull
+				agent restart
+				miner start	
+				agent log 2 "Upgraded"
+			' > /dev/null 2>&1 &
+}
+
+function savePPTables() {
+	for ppfile in /sys/class/drm/card*/device/pp_table ; do
+		echo "Saving $ppfile"
+		[[ $ppfile =~ \/card([0-9a-z]+)\/ ]]
+
+		cardno=${BASH_REMATCH[1]}
+		[[ -z ${BASH_REMATCH[1]} ]] && echo "$0: Error matching card number in $ppfile" && continue
+
+		mkdir -p /tmp/pp_tables/card$cardno
+		cp $ppfile /tmp/pp_tables/card$cardno/pp_table
+	done
+}
+
+function info() {
+	# echo -e "${GREEN}honey info${NOCOLOR} - this"
+	echo -e "${GREEN}miner start ${NOCOLOR} - start miner (or stop/restart)"
+	echo -e "${GREEN}honey monitor${NOCOLOR} ${YELLOW}or${NOCOLOR} ${GREEN}honey m${NOCOLOR} - start the whole system monitor"
+	echo -e "${GREEN}honey sm${NOCOLOR} - stop monitor"
+	echo -e "${GREEN}log${NOCOLOR} - show current miner log"
+	echo -e "${GREEN}log last${NOCOLOR} - show previous miner log"
+	echo -e "-- the commands below apply deliberately --"
+	echo -e "${GREEN}honey updateconf${NOCOLOR} - update configuration from server"
+	echo -e "${GREEN}honey upgrade${NOCOLOR} - upgrade honey system to new version"
+	echo -e "${GREEN}honey beforeCopy${NOCOLOR} - prepare system for copy"
+	# echo -e "${GREEN}honey expandspace${NOCOLOR} - take all available space"
+
+}
+
+function expandSpace() {
+	echo -e "${YELLOW}Not implemented${NOCOLOR}"
+}
+
+function loopCommand() {
+	while : ; do
+		$@
+		echo -e "${YELLOW}The command will be restarted after timeout ${NOCOLOR}"
+		sleep 5
+    done
+}
+
+function convertToUnix() {
+	file=`realpath "$1"`
+	[[ ! -f $file ]] && echo "There is no such file" && return 1
+	
+	dos2unix $file
+}
+
+function convertToUnixConf() {
+	convertToUnix $SERVER_CONF	
+	convertToUnix $RIG_CONF	
+	
+	. $RIG_CONF
+	. $SERVER_CONF
+}
+
+function hardReboot() {
+	#nohup bash -c 'reboot' > /dev/null 2>&1 &
+	sync
+	echo 1 > /proc/sys/kernel/sysrq
+	echo s > /proc/sysrq-trigger
+	echo u > /proc/sysrq-trigger
+	echo b > /proc/sysrq-trigger
+}
+
+case $1 in
+	preboot)
+		preboot 2>&1 | tee ${LOGS_DIR}honey_preboot.log
+	;;
+	boot)
+		boot
+	;;
+	upgrade)
+		upgrade
+	;;
+	updateconf)
+		updateConf
+	;;
+	monitor|m)
+		monitor
+	;;
+	monitorstop|ms|sm)
+		monitorStop
+	;;
+	info)
+		info
+	;;
+	clearlogs|cl)
+		clearLogs
+	;;
+	beforecopy|bc)
+		beforeCopy
+	;;
+	onstartx)
+		onStartX
+	;;
+	loopcommand)
+		shift
+		loopCommand $@
+	;;
+	converttounix|ctu)
+		shift
+		convertToUnix $@
+	;;
+	hardreboot)
+		hardReboot
+	;;
+	expandspace)
+		expandSpace
+	;;
+	help)
+		info
+	;;
+	*)
+		info
+	;;
+esac

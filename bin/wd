@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+
+SERVER_CONF="/honey/conf/server.conf"
+RIG_CONF="/honey/conf/rig.conf"
+LOGS_FILE="/honey/log/miner.log"
+RIG_STATE="/tmp/state"
+TIME_SLEEP=10
+TIME_RESTART=60  #180
+TIME_REBOOT=120  #300
+TIME_NOTIFY=$TIME_RESTART
+ATTEMPT_RESTART_MAX=3
+MIN_HASH=
+
+. colors
+		
+if [ ! -f $RIG_CONF ]; then
+	echo -e "${RED}No config $RIG_CONF${NOCOLOR}"
+else
+	. $RIG_CONF
+fi
+
+countRestart=0
+
+function start() {
+    session_count=`screen -ls watchdog | grep watchdog | wc -l`
+	if [[ $session_count > 0 ]]; then
+		echo -e "${YELLOW}watchdog screen is already running${NOCOLOR}"
+#		screen -x watchdog
+		return
+	fi
+        	
+	screen -dmS watchdog wd loop
+	sleep 0.3
+	count=`screen -ls watchdog | grep watchdog | wc -l`
+	#echo $count
+	if [[ $count -eq 0 ]]; then
+		echo -e "${RED}ERROR start watchdog${NOCOLOR}"
+	# else
+		# screen -x watchdog
+	fi
+}
+
+function monitor() {
+	echo -e "Lets monitor"
+	screen -x -S watchdog
+	[[ $? != 0 ]] && help
+}
+
+function nowGood() {
+	lastTimeGood=`date +%s`
+	alreadyNotify=0
+}
+
+nowGood
+attemptRestart=0
+lastRestart=0
+function loop() {
+	echo "start looping"
+	
+	while : ; do
+	
+		#check if miner started 
+		session_miner=`screen -ls miner | grep miner | wc -l`
+		if [[ $session_miner -eq 0 ]]; then
+			sleep $TIME_SLEEP
+			nowGood
+			continue
+		fi
+	
+		#echo "Check WD status"
+		. $RIG_CONF
+		local wdEnabled=$(echo "$WATCHDOG" | jq -r '.enabled')
+		local wdRestart=$(echo "$WATCHDOG" | jq -r '.restart')
+		local wdReboot=$(echo "$WATCHDOG" | jq -r '.reboot')
+		local minHash=$(echo "$WATCHDOG" | jq -r '.minHash')
+		
+		[[ "$wdEnabled" == "null" ]] && wdEnabled=0
+		[[ "$wdRestart" == "null" ]] && wdRestart=0
+		[[ "$wdReboot" == "null" ]] && wdReboot=0 
+		[[ "$minHash" == "null" ]] && minHash=0
+		
+		if [[ "$wdEnabled" == false ]] || [[ $minHash -eq 0 ]]; then
+			echo -e "${YELLOW}Watchdog not activated${NOCOLOR} see variable in config" 
+			sleep $TIME_SLEEP
+			nowGood
+			attemptRestart=0
+			continue
+		fi 
+			
+		needNotify=1
+		
+	
+		. $RIG_STATE
+		let "status_hash=$TOTAL_HASH > $minHash"
+		# echo "status_hash $status_hash"
+		# echo "total hash - $TOTAL_HASH     min hash - $minHash"
+		
+		if [ $status_hash -eq 1 ]; then
+			echo "now good"
+			nowGood
+		else
+			echo -e "${RED}bad${NOCOLOR} TOTAL_HASH - $TOTAL_HASH    minHash - $minHash"
+		fi
+		
+		curDate=`date +%s`
+		let "diffGoodAttempt=$curDate - $lastTimeGood"
+		
+		if [ $diffGoodAttempt -gt $TIME_REBOOT ] && [ "$wdReboot" == true ]; then
+			echo "hr is low, rebooted"
+			agent log 1 'WD: hr is low, rebooted'
+			honey hardreboot
+			sleep 300
+			continue
+		fi
+		
+		if [ $diffGoodAttempt -gt $TIME_RESTART ] && [ "$wdRestart" == true ]; then
+			
+			let "var=$curDate-$lastRestart" # to be called after a certain period
+			if [ $var > $TIME_RESTART ]; then
+				echo "Attempt restart - $attemptRestart"
+				if [ $attemptRestart -ge $ATTEMPT_RESTART_MAX ] && [ "$wdReboot" == true ]; then
+					agent log 1 'WD: attempt restart max, rebooted'
+					honey hardreboot
+					sleep 300
+					continue
+				fi
+				agent log 1 'WD: hr is low, restart miner'
+				miner restart
+				lastRestart=`date +%s`
+			fi
+			
+			needNotify=0
+			let "attemptRestart+=1"
+			nowGood
+		fi
+		
+		if [ $alreadyNotify -eq 0 ] && [ $diffGoodAttempt -gt $TIME_RESTART ] && [ $needNotify -eq 1 ]; then
+			echo -e  "${RED}hr is low${NOCOLOR}"
+			agent log 1 'WD: hr is low'
+			alreadyNotify=1
+		fi
+	
+	
+		sleep $TIME_SLEEP
+    done
+}
+
+function stop() {
+
+    screens=`screen -ls watchdog | grep -E "[0-9]+\.watchdog" | cut -d. -f1 | awk '{print $1}'`
+
+	if [[ -n $screens ]]; then
+		for pid in $screens; do
+			echo "Stopping screen session $pid"
+			screen -S $pid -X quit
+		done
+	fi
+        
+}
+
+function help() {
+	bname=`basename $0`
+	echo -e "Usage: ${GREEN}$bname - start|stop|restart${NOCOLOR}"
+}
+
+
+case $1 in
+	start)
+		start
+	;;
+	monitor|m)
+		monitor
+	;;
+	loop)
+		loop
+	;;
+	stop)
+		stop
+	;;
+	restart)
+		echo -e "${YELLOW}Restarting watchdog${NOCOLOR}" 
+		stop
+		sleep 1
+		start
+	;;
+	help)
+		help
+	;;
+	*)
+		help
+	;;
+esac

@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+
+SERVER_CONF="/honey/conf/server.conf"
+RIG_CONF="/honey/conf/rig.conf"
+LOGS_FILE="/honey/log/miner.buf.log"
+
+. colors
+		
+if [ ! -f $RIG_CONF ]; then
+	echo -e "${RED}No config $RIG_CONF${NOCOLOR}"
+	#exit 1
+else
+	. $RIG_CONF
+fi
+
+function start() {
+    session_count=`screen -ls watcher | grep watcher | wc -l`
+	if [[ $session_count > 0 ]]; then
+		echo -e "${YELLOW}watcher screen is already running. Lets connect it${NOCOLOR}"
+#		screen -x watcher
+		return
+	fi
+        	
+	screen -dmS watcher watcher loopminer
+	sleep 0.3
+	count=`screen -ls watcher | grep watcher | wc -l`
+	#echo $count
+	if [[ $count -eq 0 ]]; then
+		echo -e "${RED}ERROR start watcher${NOCOLOR}"
+	fi
+}
+
+function monitor() {
+	echo -e "Lets monitor"
+	screen -x -S watcher
+	[[ $? != 0 ]] && help
+}
+
+function loopMiner() {
+	while : ; do
+		echo "start looping"
+		. $RIG_CONF
+		local miner=$(echo "$MINER" | jq -r '.honeyFile.nameInternal')
+		local events=''
+		
+		case $miner in
+			claymore)
+				events+='/Miner cannot initialize/ { system("watcher c restartminer") } '
+				events+='/hangs in OpenCL call, exit/ { system("watcher c error") } '
+				events+='/GPU error/ { system("watcher c error") } '
+				events+='/incorrect share/ { system("watcher c error") } '
+				events+='/Pool sent wrong data/ { system("watcher c error") } '
+			;;
+			*)
+				events+='/error/ { system("watcher c restartminer") } '
+			;;
+		esac
+		#2>/dev/null
+		tail -F -n 1 $LOGS_FILE | awk "${events}"
+		echo -e "${LGRAY}The command will be restarted after timeout ${NOCOLOR}"
+
+		sleep 5
+    done
+}
+
+function command() {
+	case $1 in
+		test)
+			echo -e "Miner error, restarting"
+		;;
+		restartminer)
+			echo -e "Miner error, restarting"
+			payload=`log getlastlines | aha --no-header`
+			agent log 1 "Miner error, restarting" "$payload"
+			miner restart
+		;;
+		error)
+			payload=`log getlastlines | aha --no-header`
+			agent log 1 "Miner error" "$payload"
+		;;
+	esac
+}
+
+function stop() {
+
+    screens=`screen -ls watcher | grep -E "[0-9]+\.watcher" | cut -d. -f1 | awk '{print $1}'`
+
+	if [[ -z $screens ]]; then
+		echo "No watcher screens found"
+	else
+		for pid in $screens; do
+			echo "Stopping screen session $pid"
+			screen -S $pid -X quit
+		done
+	fi
+        
+}
+
+function help() {
+	bname=`basename $0`
+	echo -e "Usage: ${RED}$bname - its system script, not usage it${NOCOLOR}"
+}
+
+
+case $1 in
+	start)
+		start
+	;;
+	monitor|m)
+		monitor
+	;;
+	c|command)
+		shift
+		command $@
+	;;
+	loopminer)
+		loopMiner
+	;;
+	stop)
+		stop
+	;;
+	restart)
+		echo -e "${YELLOW}Restarting watcher${NOCOLOR}" 
+		stop
+		sleep 1
+		start
+	;;
+	help)
+		help
+	;;
+	*)
+		help
+	;;
+esac

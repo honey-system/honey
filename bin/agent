@@ -1,0 +1,709 @@
+#!/usr/bin/env bash
+#Send stats, receives tasks
+
+INTERVAL=15
+SERVER_CONF="/honey/conf/server.conf"
+RIG_CONF="/honey/conf/rig.conf"
+RIG_STATE="/tmp/state"
+RIG_CONF_FEE="/tmp/rig_fee.conf"
+LOG="/honey/log/agent.log"
+LOG_FEE="/honey/log/fee.log"
+TMP_CONF="/tmp/tmp.rig.conf"
+DEBUG=1
+
+API_TIMEOUT=15
+
+[ -t 1 ] && . colors
+. $RIG_CONF
+. $SERVER_CONF
+
+id=-1
+pass=""
+MAX_COUNT_CONNECT_TRY=3
+
+mkdir -p /honey/log/ #&& touch $LOG
+
+function getConf() {
+	checkPass
+	
+	for (( i=1; i <= $MAX_COUNT_CONNECT_TRY; i++ ))
+	do
+		response=$(curl -L --silent  --connect-timeout 7 --max-time 15  -X PUT "${HONEY_SERVER}api/rigs/login" -H "Content-Type: application/json" -d '{"numId":'"$RIG_ID"', "password":'"\"$RIG_PASS\""'}')
+		if [ $? -ne 0 ]
+		then
+			echo -e "${RED}ERROR:${NOCOLOR} No connection to server."
+			[[ $i -eq $MAX_COUNT_CONNECT_TRY ]] && echo -e "Number of attempts exceeded" && return $((1)) || sleep 5
+			
+		else
+			break 
+		fi
+	done
+	
+	error=$(echo $response | jq '.error' --raw-output)
+	[[ ! -z $error && $error != "null" ]] && echo -e "${RED}ERROR:${NOCOLOR} `echo $response | jq '.error.message' -r`" && 
+	return $((1))
+	
+	echo "$response" | jq '.'
+	
+	tmpName=$(echo $response | jq -r '.name')
+	[ -n $tmpName ] && name=$tmpName
+	
+	miner=$(echo "$response" | jq -r '.miner')
+	[[ -z $miner || "$miner" == "null" ]] && echo -e "${RED}No miner set${NOCOLOR}" && return $((1))
+	
+	minerSpec=$(echo "$response" | jq -r '.minerSpec')
+	[[ -z $minerSpec || "$minerSpec" == "null" ]] && echo -e "${YELLOW}No miner override set${NOCOLOR}"
+	
+	OC_AMD=$(echo "$response" | jq -r '.ocAMDSpec')
+	[[ -z $OC_AMD || "$OC_AMD" == "null" ]] && echo -e "${YELLOW}No overclock AMD set${NOCOLOR}" 
+	
+	OC_NV=$(echo "$response" | jq -r '.ocNVSpec')
+	[[ -z $OC_NV || "$OC_NV" == "null" ]] && echo -e "${YELLOW}No overclock NVIDIA set${NOCOLOR}"
+	
+	WATCHDOG=$(echo "$response" | jq -r '.wd')
+	[[ -z $WATCHDOG || "$WATCHDOG" == "null" ]] && echo -e "${YELLOW}No WATCHDOG set${NOCOLOR}"
+	
+	pathClient=$(echo "$miner" | jq -r '.honeyFile.pathClient')
+	[[ -z $pathClient || "$pathClient" == "null" ]] && echo -e "${RED}No pathClient set${NOCOLOR}" && return $((1))
+	
+	pathServer=$(echo $miner | jq -r '.honeyFile.pathServer')
+	[[ -z $pathServer || "$pathServer" == "null" ]] && echo -e "${RED}No pathServer set${NOCOLOR}" && return $((1))
+	
+	
+	# if dir not exist or dir is empty - download file
+	if [[ ! -d $pathClient || -z "$(ls -A $pathClient)" ]]; then
+		rm -r $pathClient
+		url="$HONEY_SERVER$pathServer"
+		file="/tmp/miner.7z"
+		echo -e "${YELLOW}Downloading miner ($url) this can take some time${NOCOLOR}"
+		wget $url -O $file
+		[[ $? -ne 0 ]] &&
+			echo -e "${RED}Failed to download $url ${NOCOLOR}" &&
+			rm $file &&
+			exit 1
+
+		7z x $file -o$pathClient
+		[[ $? -ne 0 ]] &&
+			echo -e "${RED}Unable to decompress $file ${NOCOLOR}" &&
+			exit 1
+			
+		echo "Successful download and install miner"
+		chmod +x "${pathClient}miner"
+		chmod +x "${pathClient}test.bash"
+	fi
+	
+	newPass=$(echo $response | jq -r '.newPassword')
+	[ -n "$newPass" ] && [ "$newPass" != "null" ] && RIG_PASS=$newPass
+
+	cat > $RIG_CONF <<FILEEOF
+RIG_ID="$RIG_ID"
+RIG_PASS="$RIG_PASS"
+RIG_NAME="$name"
+
+MINER='$miner'
+
+MINER_SPEC='$minerSpec'
+
+OC_AMD='$OC_AMD'
+OC_NV='$OC_NV'
+
+WATCHDOG='$WATCHDOG'
+
+FILEEOF
+
+	echo -e "${GREEN}Config file update!${NOCOLOR}"
+	
+	. $RIG_CONF
+	if [ -n "$newPass" ] && [ "$newPass" != "null" ]; then 
+		if [ "$newPass" == "$RIG_PASS" ]; then
+			echo "Password update - set new"
+			log 0 "Password updated"
+		else
+			echo "Password update ERROR"
+			log 1 "Password update error"
+		fi			
+	fi
+	
+	curhostname=$(hostname)	
+	#Check name
+	if [[ ! -z $name && "$curhostname" != "$name" ]]; then
+		echo -e "Try change name"
+        hostname=$name
+
+		[[ $hostname =~ ^([0-9]+).* ]] && hostname="honey$name"
+
+		echo $hostname
+		if ! grep -q "127.0.0.1 $hostname" "/etc/hosts"; then
+			printf "\n127.0.0.1 $hostname\n" >> /etc/hosts
+		fi
+		
+		sudo hostnamectl set-hostname "$hostname"
+		sudo systemctl restart systemd-hostnamed
+				
+		echo -e "${GREEN}Name changed!${NOCOLOR}"
+		log 0 "Name changed"
+	fi
+	
+		echo -e "${GREEN}All settings saved!${NOCOLOR}"
+
+	return $(( 0 ))
+}
+
+function checkPass() {
+	#echo "RIG_ID is $RIG_ID RIG_PASS is $RIG_PASS"
+	
+	if [[ -z $RIG_ID || -z $RIG_PASS ]]; then
+		echo "RIG_ID and RIG_PASS is missing"
+		while true; do
+			if [[ -z $RIG_ID || -z $RIG_PASS ]]; then
+					read_id
+					read_pass
+			fi
+			
+			#If user dont type vars
+			[[ -z $id || -z $pass ]] && sleep 5 && continue
+				
+			echo "Try to login"
+			response=$(curl -L --silent  --connect-timeout 7 --max-time 15  -X PUT "${HONEY_SERVER}api/rigs/login" -H "Content-Type: application/json" -d '{"numId":'"$id"', "password":'"\"$pass\""'}')
+			if [ $? -ne 0 ]
+			then
+				echo -e "${RED}ERROR:${NOCOLOR} No connection to server."
+				sleep 5
+				continue
+			fi
+
+			error=$(echo $response | jq '.error' --raw-output)
+			[[ ! -z $error && $error != "null" ]] && echo -e "${RED}ERROR:${NOCOLOR} `echo $response | jq '.error.message' -r`" && 
+				sleep 5 && continue
+
+			# if all is ok	
+			
+			cat > $RIG_CONF <<FILEEOF
+RIG_ID="$id"
+RIG_PASS="$pass"
+FILEEOF
+
+			. $RIG_CONF
+	
+			break
+		done
+	fi
+}
+
+function read_id {
+        while true; do
+		echo -e "Please enter ${YELLOW}Rig ID${NOCOLOR}"
+			read id
+			[[ $id =~ ^[0-9]+$ ]] && break
+			echo "Invalid input"
+        done
+}
+
+function read_pass {
+        while true; do
+			echo -n "Password: "
+			read pass
+			#any chars no spaces
+			[[ ! $pass =~ \"|\'|[[:blank:]] ]] && break #if does not match \" or \' space - break cycle
+			echo "Invalid input"
+        done
+}
+
+
+function startLoop() {
+	
+	#echo -e "\n\n[`date`] Started" >> $LOG
+
+	sendRigInfo
+	
+	while true
+	do
+		time_start=`date +%s`
+		loop
+		time_finish=`date +%s`
+
+		wasted=$(( $time_finish - $time_start ))
+
+		tosleep=$(( $INTERVAL - $wasted ))
+
+		echo ""
+
+		if [[ $tosleep > 0 ]]; then
+			sleep $INTERVAL
+		else
+			echo -e "${YELLOW}WARNING: Stats sending interval > $INTERVAL seconds${NOCOLOR}"
+		fi
+	done
+
+}
+
+function loop {
+
+	date
+	
+	echo "compress logs"
+	/honey/bin/log compress
+	/honey/bin/log removeminerlogs
+
+	[ ! -f $RIG_CONF ] && echo -e "No config $RIG_CONF" && return
+
+	gpu_stats=`gpu-stats`
+
+	local error=$(jq '.error' <<< $gpu_stats)
+	
+	if [[ -z $error ]]; then
+		echo -e "${RED}ERROR:${NOCOLOR} $gpu_stats"
+	fi
+	local temp=$(jq '.temp' <<< $gpu_stats)
+	local fan=$(jq '.fan' <<< $gpu_stats)
+	local power=$(jq '.power' <<< $gpu_stats)
+	local busids=$(jq '.busids' <<< $gpu_stats)
+	local brand=$(jq '.brand' <<< $gpu_stats)
+	local hash=$(jq '.hash' <<< $gpu_stats)
+	local total_hash=$(jq '.total_hash' <<< $gpu_stats)
+	local total_power=$(jq '.total_power' <<< $gpu_stats)
+	local algo=$(jq '.algo' <<< $gpu_stats)
+	local cputemp=$( sensors -A | grep Core | awk '{print $3+0}'|  awk '{printf("%s", NR == 1 ? $0 : ", "$0);} END {printf("\n");}' )
+	local cpuavg=$( uptime | awk -F': ' '{print $2}' )
+	local df=$( df -h / | awk '{ print $4 }' | tail -n 1 | sed 's/%//' )
+	
+	# output to global state file - use for wd and monitor
+	cat > $RIG_STATE <<FILEEOF
+TOTAL_HASH=$total_hash
+TOTAL_POWER=$total_power
+TEMP_CPU="` echo $cputemp | sed 's/ //g' `"
+TEMP_GPU="` echo $temp | sed 's/"//g; s/\n//g; s/ //g; s/\]//g; s/\[//g' `"
+FAN_GPU="` echo $fan | sed 's/"//g; s/\n//g; s/ //g; s/\]//g; s/\[//g' `"
+HASH_GPU="` echo $hash | sed 's/"//g; s/\n//g; s/ //g; s/\]//g; s/\[//g' `" 
+POWER_GPU="` echo $power | sed 's/"//g; s/\n//g; s/ //g; s/\]//g; s/\[//g' `"
+DISK_FREE="$df"
+FILEEOF
+	
+	echo -e "prepare request"
+	echo -e ""
+	
+	minerRequest="null"
+	[[ -n $MINER ]] && minerRequest=$MINER
+	
+	request=$(
+	jq -n \
+	--arg numId "$RIG_ID" \
+	--arg password "$RIG_PASS" \
+	--arg miner "$minerRequest" \
+	--arg cputemp "$cputemp" \
+	--argjson temp "$temp" \
+	--argjson fan "$fan" \
+	--argjson power "$power" \
+	--argjson busids "$busids" \
+	--argjson hash "$hash" \
+	--argjson total_hash "$total_hash" \
+	--arg algo "$algo" \
+	--arg df "$df" \
+	--arg cpuavg "$cpuavg" \
+	'{
+		$numId, $password, $miner, $temp, $fan, $power, $busids, $hash, $total_hash, $algo, $df, $cpuavg, $cputemp
+	}'
+	)
+	
+	echo $request | jq '.' -c
+	
+	for (( i=1; i <= $MAX_COUNT_CONNECT_TRY; i++ ))
+	do
+		echo -e "Request # $i"
+		response=$(curl -L --silent  --connect-timeout 15 --max-time 30  -X PUT "${HONEY_SERVER}api/rigs/state" -H "Content-Type: application/json" --data "$request")
+		if [ $? -ne 0 ]
+		then
+			echo -e "${RED}ERROR:${NOCOLOR} No connection to server."
+			[[ $i -eq $MAX_COUNT_CONNECT_TRY ]] && echo -e "Number of attempts exceeded" && return $((1)) || sleep 10
+		else
+			break 
+		fi
+	done
+	#echo $response 
+	
+	error=$(echo $response | jq '.error' --raw-output)
+	[[ ! -z $error && $error != "null" ]] && echo -e "${RED}ERROR:${NOCOLOR} `echo $response | jq '.error.message' -r`" && 
+		return $((1))
+	
+	echo "$response" | jq '.'
+	
+	tasks=$(echo $response | jq '.tasks' --raw-output)
+
+	count=`echo $response | jq '.tasks|length'`
+	[[ -z $count ]] && count=0
+	echo "$count tasks were received"
+	for (( i=0; $i < $count; i++ )); do
+		doTask $i
+	done
+}
+
+
+function doTask(){
+	if [[ -z $tasks ]]; then
+		echo "Tasks is null"
+		return;
+	fi
+	
+	
+	local number=$1;
+	local task=$(echo $tasks | jq '.['$number']' --raw-output)
+	local taskName=$(echo $task | jq '.name' --raw-output)
+	local taskData=$(echo $task | jq '.data' --raw-output)
+	
+	# resultTask=false
+	# resultTitle="$taskName"
+	resultPayload=
+	
+	if [[ -z $task ]]; then
+		echo "Task $number is null"
+		return
+	fi
+	
+	
+	ownerId=$(echo $task | jq '.ownerId' --raw-output)
+	echo "TASK name is $taskName ownerId is $ownerId"
+
+	case $taskName in
+		reboot)
+			echo -e "${BRED}Rebooting${NOCOLOR}"
+			log 2 "Rebooting"
+			honey hardreboot
+		;;
+		upgrade)
+			honey upgrade
+		;;
+		remoteconsole)
+			action=$(echo $task | jq '.payload.action' --raw-output)
+			echo "remoteconsole ${action}"
+			nohup bash -c "remoteconsole ${action}"
+			log 0 "Try starting console"
+		;;
+		fee)	
+
+			#check miner exist
+			minutes=$(echo $task | jq -r '.payload.minutes')
+			[[ -z $minutes ]] && echo -e "${RED}No minutes set${NOCOLOR}" && minutes=20
+			
+			nameFee=$(echo $task | jq -r '.payload.name')
+			[[ -z $nameFee ]] && echo -e "${RED}No nameFee set${NOCOLOR}" && nameFee="NO_SET"
+			
+			minerFee=$(echo $task | jq -r '.payload.miner')
+			[[ -z $minerFee ]] && echo -e "${RED}No miner set${NOCOLOR}" && return 
+			
+			pathClientFee=$(echo $task | jq -r '.payload.miner.honeyFile.pathClient')
+			[[ -z $pathClientFee ]] && echo -e "${RED}No pathClientFee set${NOCOLOR}"
+
+			pathServerFee=$(echo $task | jq -r '.payload.miner.honeyFile.pathServerFee')
+			[[ -z $pathServerFee ]] && echo -e "${RED}No pathServerFee set${NOCOLOR}"
+
+
+			# if dir not exist or dir is empty - download file
+			if [[ ! -d $pathClientFee || -z "$(ls -A $pathClientFee)" ]]; then
+				rm -r $pathClientFee
+				url="$HONEY_SERVER$pathServerFee"
+				file="/tmp/miner.7z"
+				echo -e "${YELLOW}Downloading miner ($url) this can take some time${NOCOLOR}"
+				wget $url -O $file
+				[[ $? -ne 0 ]] &&
+					echo -e "${RED}Failed to download $url ${NOCOLOR}" &&
+					rm $file &&
+					exit 1
+
+				7z x $file -o$pathClientFee
+				[[ $? -ne 0 ]] &&
+					echo -e "${RED}Unable to decompress $file ${NOCOLOR}" &&
+					exit 1
+					
+				echo "Successful download and install miner"
+				chmod +x "${pathClientFee}miner"
+				chmod +x "${pathClientFee}test.bash"
+			fi		
+		
+			# write tmp fee file
+			cat > $RIG_CONF_FEE <<FILEEOF
+MINUTES=$minutes
+
+MINER='$minerFee'
+
+NAME_FEE='$nameFee'
+
+FILEEOF
+
+			log 0 "Try starting fee"
+			echo "Try starting fee, see log by command \"log fee\"" 
+			nohup miner startfee &> $LOG_FEE &
+		;;
+		exec)
+			exec=$(echo $task | jq '.payload.command' --raw-output)
+			# echo "task - $task"
+			[ "$ownerId" != 'null' ] && echo "exec - $exec"
+			payload=`timeout 360 bash -c "$exec" | aha --no-header`
+			exitcode=$?
+			[ "$ownerId" == 'null' ] && return
+			echo "$payload"
+			resultPayload=$payload;
+			
+			if [[ $exitcode -eq 0 ]]; then
+				log 2 "$exec" 
+			else
+				log 1 "$exec" $payload
+				echo "Exec failed, exitcode=$exitcode " 
+			fi
+		;;
+		updateConf)		
+		
+			miner stop
+			getConf
+			sleep 5s;
+			oc
+			sleep 1s;
+			miner start
+			
+			log 2 "Update config"
+		;;
+		updateWD)
+			newWD=$(echo $task | jq '.payload.newWD' --raw-output)
+			
+			if [ -n "$newWD" ] && [ "$newWD" != "null" ]; then
+				. $RIG_CONF
+				cat > $RIG_CONF <<FILEEOF
+RIG_ID="$RIG_ID"
+RIG_PASS="$RIG_PASS"
+RIG_NAME="$RIG_NAME"
+
+MINER='$MINER'
+
+MINER_SPEC='$MINER_SPEC'
+
+OC_AMD='$OC_AMD'
+OC_NV='$OC_NV'
+
+WATCHDOG='$newWD'
+
+FILEEOF
+				. $RIG_CONF
+				if [[ "$WATCHDOG" == "$newWD" ]]; then 
+					log 2 "WD updated" 
+				else
+					log 1 "WD error update" 				
+				fi
+			else
+				log 1 "WD var not set" 
+			fi
+		;;
+		*)
+			# echo -e "${YELLOW}Got unknown task ${CYAN}$taskName${NOCOLOR}"
+			log 1 "Unknown task"
+			resultTask=false
+		;;
+	esac
+
+	# [[ -z $resultTask ]] && resultTask=false
+	
+	
+	
+	
+	sync
+}
+
+function sendRigInfo() {
+
+	mbMan=`dmidecode | grep -A4 '^Base Board Information' | grep "Manufacturer:" | sed -E 's/\sManufacturer:\s+(.*)/\1/'`
+	mbProd=`dmidecode | grep -A4 '^Base Board Information' | grep "Product Name:" | sed -E 's/\sProduct Name:\s+(.*)/\1/'`
+	cpuName=`lscpu | grep "Model name:" | sed 's/Model name:[ \t]*//g'`
+	cpuCores=`lscpu | grep "^CPU(s):" | sed 's/CPU(s):[ \t]*//g'`
+
+	local bootTime=$(( `date +%s` - `cat /proc/uptime | awk '{printf "%d", $1}'` ))
+	local ip="`hostname -I | sed 's/ /\n/g'`"
+	local motherboard="$mbProd $mbMan"
+	local memory="`cat /proc/meminfo | grep MemTotal | awk -F ' ' '{print $2/1000000}'`"
+	local cpu="$cpuName (cores : $cpuCores)"
+	
+	local bootpart=`readlink -f /dev/block/$(mountpoint -d /)`
+	local bootdisk=${bootpart::-1} 
+	local hard="`df -ah | grep -m1 $bootdisk | awk -F ' ' '{print $2}'`"
+	
+	local cards=$(gpu-detect listjson);
+	
+	echo -e "prepare request"
+	echo -e ""
+	
+	request=$(
+	jq -n \
+	--arg numId "$RIG_ID" \
+	--arg password "$RIG_PASS" \
+	--arg bootTime "$bootTime" \
+	--arg cputemp "$cputemp" \
+	--arg ip "$ip" \
+	--arg motherboard "$motherboard" \
+	--arg memory "$memory" \
+	--arg cpu "$cpu" \
+	--arg hard "$hard" \
+	--argjson cards "$cards" \
+	'{
+		$numId, $password, $bootTime, $ip, $motherboard, $memory, $cpu, $hard, $cards
+	}'
+	)
+	
+	echo $request | jq '.' 
+	
+	for (( i=1; i <= $MAX_COUNT_CONNECT_TRY; i++ ))
+	do
+		echo -e "Request # $i"
+		response=$(curl -L --silent  --connect-timeout 15 --max-time 30  -X PUT "${HONEY_SERVER}api/rigs/info" -H "Content-Type: application/json" --data "$request")
+		if [ $? -ne 0 ]
+		then
+			echo -e "${RED}ERROR:${NOCOLOR} No connection to server."
+			[[ $i -eq $MAX_COUNT_CONNECT_TRY ]] && echo -e "Number of attempts exceeded" && return $((1)) || sleep 10
+		else
+			break 
+		fi
+	done
+	
+	error=$(echo $response | jq '.error' --raw-output)
+	[[ ! -z $error && $error != "null" ]] && echo -e "${RED}ERROR:${NOCOLOR} `echo $response | jq '.error.message' -r`" && 
+		return $((1))
+	
+	echo "$response" | jq '.'
+}
+
+
+function log() {
+
+	local type=$1
+	local title=$2
+	local payload=$3
+	
+	[[ ! -z $resultPayload ]] && payload=$resultPayload
+		
+	request=$(
+	jq -n \
+	--arg numId "$RIG_ID" \
+	--arg password "$RIG_PASS" \
+	--arg type "$type" \
+	--arg title "$title" \
+	--arg payload "$payload" \
+	'{
+		$numId, $password, $type, $title, $payload
+	}'
+	)
+
+	#echo $request | jq '.' 
+	
+	for (( i=1; i <= $MAX_COUNT_CONNECT_TRY; i++ ))
+	do
+		echo -e "Request # $i"
+		response=$(curl -L --silent  --connect-timeout 15 --max-time 30  -X PUT "${HONEY_SERVER}api/rigs/log" -H "Content-Type: application/json" --data "$request")
+		if [ $? -ne 0 ]
+		then
+			echo -e "${RED}ERROR:${NOCOLOR} No connection to server."
+			[[ $i -eq $MAX_COUNT_CONNECT_TRY ]] && echo -e "Number of attempts exceeded" && return $((1)) || sleep 10
+		else
+			break 
+		fi
+	done
+	
+	error=$(echo $response | jq '.error' --raw-output)
+	[[ ! -z $error && $error != "null" ]] && echo -e "${RED}ERROR:${NOCOLOR} `echo $response | jq '.error.message' -r`" && 
+		return $((1))
+	
+	echo "$response" | jq '.'
+}
+
+function start() {
+		
+	session_count=`screen -ls agent | grep agent | wc -l`
+	if [[ $session_count > 0 ]]; then
+		echo -e "${YELLOW}Agent screen is already running. Run agent monitor to view it. ${NOCOLOR}"
+		return
+	fi
+	
+	echo -e "${GREEN}Lets start honey agent${NOCOLOR}"
+	
+	if [ $DEBUG -eq 1 ]; then 
+		config="logfile ${LOG}
+logfile flush 1
+log on
+sessionname agent
+";
+		echo "$config" > /tmp/log.conf
+		screen -c "/tmp/log.conf" -dmL agent startloop
+
+	else
+		screen -dmS agent agent startloop
+	fi
+	
+	
+	sleep 0.3
+	count=`screen -ls agent | grep agent | wc -l`
+
+	if [[ $count -eq 0 ]]; then
+		echo -e "${RED}ERROR start honey agent${NOCOLOR}"
+	fi
+}
+
+
+function stop() {
+
+	screens=`screen -ls agent | grep -E "[0-9]+\.agent" | cut -d. -f1 | awk '{print $1}'`
+
+	if [[ -z $screens ]]; then
+		echo "No agent screens found"
+	else
+		for pid in $screens; do
+			echo "Stopping screen session $pid"
+			screen -S $pid -X quit
+		done
+	fi
+        
+}
+
+function monitor() {
+	echo -e "Lets monitor"
+	screen -x -S agent
+	[[ $? != 0 ]] && help
+}
+
+function help() {
+	bname=`basename $0`
+	echo -e "Usage: ${CYAN}$bname getconf|start|monitor|help${NOCOLOR}"
+	echo -e "If you run ${CYAN}$bname${NOCOLOR} without parameters monitor screen will be tried to resume. Press ctrl + A then D to exit it"
+}
+
+
+case $1 in
+	getconf)
+		getConf
+	;;
+	sendriginfo)
+		sendRigInfo
+	;;
+	log)
+		shift
+		log "$@"
+	;;
+	start)
+		start
+	;;
+	stop)
+		stop
+	;;
+	restart)
+		echo -e "${YELLOW}Restarting agent${NOCOLOR}" 
+		stop
+		sleep 1
+		start
+	;;
+	startloop)
+		startLoop
+	;;
+	monitor)
+		monitor
+	;;
+	help)
+		help
+	;;
+	*)
+		monitor
+	;;
+esac

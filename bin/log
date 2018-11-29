@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+
+LOGS_DIR="/honey/log/"
+NUM_LINES_ACTUAL=1000
+LOG_MINER_BUFFER="miner.buf.log"
+LOG_MINER="miner.log"
+
+. colors
+		
+function scroll() {
+	[ -f ${LOGS_DIR}miner-last-1.log ] && cp ${LOGS_DIR}miner-last-1.log  ${LOGS_DIR}miner-last-2.log
+	[ -f ${LOGS_DIR}miner-last-0.log ] && cp ${LOGS_DIR}miner-last-0.log  ${LOGS_DIR}miner-last-1.log 
+	cp ${LOGS_DIR}miner.log ${LOGS_DIR}miner-last-0.log 
+	
+	cat /dev/null > ${LOGS_DIR}miner.log
+}
+		
+function compress() {
+	cd $LOGS_DIR
+	cat $LOG_MINER_BUFFER >> miner.log # add text from bufer log 
+	> $LOG_MINER_BUFFER # for watcher script - remove log file - error with tail
+	echo "`tail -$NUM_LINES_ACTUAL $LOG_MINER`" > $LOG_MINER # save only last lines
+	
+	# for file in *.log
+	# do
+		# # echo $file
+		# # read var
+		# if [[ "$file" == "miner.sys.log" ]]; then
+			# > $file 
+		# else
+			# echo "`tail -$NUM_LINES_ACTUAL $file`" > $file # save only last lines
+		# fi
+	# done
+}
+		
+function removeMinerLogs() {
+	find /honey/miners -name '*_log.txt' -exec rm -f {} \;
+}
+		
+function last() {
+	if [[ -z $1 ]]; then
+		less -R +G -f ${LOGS_DIR}miner-last-0.log
+	else
+		less -R +G -f ${LOGS_DIR}miner-last-${1}.log
+	fi
+}
+		
+function cur() {
+	less -R +G -f ${LOGS_DIR}miner.log
+}
+		
+function preboot() {
+	less -R +G -f ${LOGS_DIR}honey_preboot.log
+}
+		
+function getLastLines() {
+	compress #for send actual data - copy from buffre
+	tail -n 30 ${LOGS_DIR}miner.log
+}
+		
+function fee() {
+	tail -f ${LOGS_DIR}fee.log
+}
+
+function help() {
+	bname=`basename $0`
+	echo -e "Usage: ${CYAN}$bname last | cur | preboot | fee${NOCOLOR}"
+}
+
+
+case $1 in
+	last)
+		shift
+		last $@
+	;;
+	compress)
+		compress
+	;;
+	removeminerlogs)
+		removeMinerLogs
+	;;
+	scroll)
+		scroll
+	;;
+	getlastlines)
+		getLastLines
+	;;
+	preboot)
+		preboot
+	;;
+	fee)
+		fee
+	;;
+	help)
+		help
+	;;
+	*)
+		cur
+	;;
+esac

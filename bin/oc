@@ -1,0 +1,365 @@
+#!/usr/bin/env bash
+
+SERVER_CONF="/honey/conf/server.conf"
+RIG_CONF="/honey/conf/rig.conf"
+
+. colors
+. $RIG_CONF
+. $SERVER_CONF
+
+DEFAULT_CORE_STATE=5
+CORE_CLOCK=
+CORE_VDDC=
+CORE_STATE=
+MEM_CLOCK=
+MEM_STATE=
+FAN=
+
+function AMD() {
+	echo -e "Lets overclock AMD"
+	
+	echo "OC_AMD "$OC_AMD;
+	
+	[[ -z $OC_AMD || $OC_AMD == "null" ]] && echo -e "${YELLOW}No overclock AMD set${NOCOLOR}" && return
+	
+	CORE_CLOCK=$(echo "$OC_AMD" | jq -r '.core')
+	CORE_VDDC=$(echo "$OC_AMD" | jq -r '.volt')
+	CORE_STATE=
+	MEM_CLOCK=$(echo "$OC_AMD" | jq -r '.memory')
+	MEM_STATE=
+	FAN=$(echo "$OC_AMD" | jq -r '.fan')
+	
+	n=`gpu-detect AMD`
+
+	if [[ $n == 0 ]]; then
+		echo "No AMD cards detected, exiting"
+		return
+	fi
+	echo "Detected $n AMD cards"
+
+	[[ ! -z $CORE_CLOCK ]] &&
+	CORE_CLOCK=($CORE_CLOCK) &&
+	for (( i=${#CORE_CLOCK[@]}; i < $n; ++i )); do
+		CORE_CLOCK[$i]=${CORE_CLOCK[$i-1]}
+	done
+
+	[[ ! -z $CORE_VDDC ]] &&
+	CORE_VDDC=($CORE_VDDC) &&
+	for (( i=${#CORE_VDDC[@]}; i < $n; ++i )); do
+		CORE_VDDC[$i]=${CORE_VDDC[$i-1]}
+	done
+
+	[[ ! -z $CORE_STATE ]] &&
+	CORE_STATE=($CORE_STATE) &&
+	for (( i=${#CORE_STATE[@]}; i < $n; ++i )); do
+		CORE_STATE[$i]=${CORE_STATE[$i-1]}
+	done
+
+	[[ ! -z $MEM_CLOCK ]] &&
+	MEM_CLOCK=($MEM_CLOCK) &&
+	for (( i=${#MEM_CLOCK[@]}; i < $n; ++i )); do
+		MEM_CLOCK[$i]=${MEM_CLOCK[$i-1]}
+	done
+
+	[[ ! -z $MEM_STATE ]] &&
+	MEM_STATE=($MEM_STATE) &&
+	for (( i=${#MEM_STATE[@]}; i < $n; ++i )); do
+		MEM_STATE[$i]=${MEM_STATE[$i-1]}
+	done
+
+
+
+	[[ ! -z $FAN ]] &&
+	FAN=($FAN) &&
+	for (( i=${#FAN[@]}; i < $n; ++i )); do
+		FAN[$i]=${FAN[$i-1]}
+	done
+
+
+	echo "CORE_CLOCK = ${CORE_CLOCK[*]}"
+	echo "CORE_STATE = ${CORE_STATE[*]}"
+	echo "CORE_VDDC  = ${CORE_VDDC[*]}"
+	echo "MEM_CLOCK  = ${MEM_CLOCK[*]}"
+	echo "MEM_STATE  = ${MEM_STATE[*]}"
+	echo "FAN        = ${FAN[*]}"
+
+
+	dirs=`ls -d1 /sys/class/drm/card*/device/pp_table | sort --version-sort` #natural sort for 10+ cards
+	if [[ -z $dirs ]]; then
+		echo -e "${RED}No AMD GPUs found as /sys/class/drm/card*/device/pp_table${NOCOLOR}"
+		exit 1
+	fi
+
+	busids_dirs=()
+	for dir in $dirs; do
+		basedir=${dir%/*}
+		busid=`cat $basedir/uevent | grep PCI_SLOT_NAME | awk -F= '{print $2}'`
+		busids_dirs+=("$busid;$dir")
+	done
+
+	busids_dirs=`printf '%s\n' "${busids_dirs[@]}" | sort` #sorting by bus id
+
+
+	i=-1
+	
+	for bdir in $busids_dirs; do
+		dir=`echo $bdir | awk -F\; '{print $2}'`
+
+		(( i++ ))
+		echo ""
+
+		[[ $dir =~ \/card([0-9a-z]+)\/ ]]
+		cardno=${BASH_REMATCH[1]}
+
+
+		[[ -z $cardno ]] && echo -e "${RED}ERROR: can not match card no in $dir${NOCOLOR}" && continue
+
+		busid=`echo $bdir | awk -F\; '{print $1}'`
+		busid=${busid#0000:} #trim prefix
+
+		echo -e "${YELLOW}===${NOCOLOR} GPU ${CYAN}$i${NOCOLOR}, ${PURPLE}$busid${NOCOLOR} /sys/class/drm/card$cardno ${YELLOW}===${NOCOLOR}"
+		savedpp=/tmp/pp_tables/card$cardno/pp_table
+
+		[[ ! -e $savedpp ]] && echo -e "ERROR: $savedpp not found, try to reboot" && continue
+
+		args=''
+		coreState=
+
+		memoryState=`wolfamdctrl -i $cardno --show-mem | grep -E "Memory state ([0-9]+):" | tail -n 1 | sed -r 's/.*([0-9]+).*/\1/'`
+
+		if [[ ! -z $CORE_STATE ]]; then
+			if [[ ${CORE_STATE[$i]} -ge 0 && ${CORE_STATE[$i]} -le 7 ]]; then
+				[[ ${CORE_STATE[$i]} != 0 ]] && #skip zero state, means auto
+					coreState=${CORE_STATE[$i]}
+			else
+				echo -e "${YELLOW}WARNING: Invalid core state ${CORE_STATE[$i]}, falling back to $DEFAULT_CORE_STATE${NOCOLOR}"
+			fi
+		fi
+
+
+		if [[ ! -z $MEM_STATE ]]; then
+			if [[ ${MEM_STATE[$i]} -ge 0 && ${MEM_STATE[$i]} -le $memoryState ]]; then
+				[[ ${MEM_STATE[$i]} != 0 ]] && #skip zero state, means auto
+					memoryState=${MEM_STATE[$i]}
+			else
+				echo -e "${YELLOW}WARNING: Invalid mem state ${MEM_STATE[$i]}, falling back to $memoryState${NOCOLOR}"
+			fi
+		fi
+
+
+		if [[ ! -z $MEM_CLOCK && ${MEM_CLOCK[$i]} > 0 ]]; then
+			args+=" --mem-clock ${MEM_CLOCK[$i]} --mem-state $memoryState"
+		fi
+
+		if [[ ! -z $CORE_CLOCK && ${CORE_CLOCK[$i]} > 0 ]]; then
+			[[ -z $coreState ]] && 
+				echo -e "${YELLOW}WARNING: Unset core state, falling back to $DEFAULT_CORE_STATE${NOCOLOR}" &&
+				coreState=$DEFAULT_CORE_STATE
+			args+=" --core-clock ${CORE_CLOCK[$i]} --core-state $coreState"
+		fi
+
+
+		if [[ ! -z $CORE_VDDC && ${CORE_VDDC[$i]} > 0 ]]; then
+			[[ -z $coreState ]] && # core set is not specified, let's use some default or it will not work
+				echo -e "${YELLOW}WARNING: Unset core state, falling back to $DEFAULT_CORE_STATE${NOCOLOR}" &&
+				coreState=$DEFAULT_CORE_STATE
+			args+=" --vddc-table-set ${CORE_VDDC[$i]} --volt-state $coreState"
+		fi
+
+		[[ ! -z $FAN && ${FAN[$i]} > 0 ]] &&
+			args+=" --set-fanspeed ${FAN[$i]}"
+
+
+		if [[ -z $args ]]; then
+			echo "Nothing to set"
+		else
+			cp $savedpp /sys/class/drm/card$cardno/device/pp_table
+			sync
+			
+			oc_cmd="wolfamdctrl -i $cardno $args"
+			echo $oc_cmd
+			eval $oc_cmd
+		fi
+
+		if [[ ! -z $coreState || ! -z $memoryState ]]; then
+			 echo "manual" > /sys/class/drm/card$cardno/device/power_dpm_force_performance_level
+
+			[[ ! -z $coreState ]] &&
+				echo $coreState > /sys/class/drm/card$cardno/device/pp_dpm_sclk &&
+				echo "Setting DPM core state to $coreState"
+
+			[[ ! -z $memoryState ]] &&
+				echo $memoryState > /sys/class/drm/card$cardno/device/pp_dpm_mclk
+		fi
+
+	done
+
+	sync
+	
+	sleep 0.3
+
+}
+
+
+function NVIDIA() {
+	echo -e "Lets overclock NVIDIA"
+	
+	echo "OC_NV "$OC_NV;
+		
+	[[ -z $OC_NV || $OC_NV == "null"  ]] && echo -e "${YELLOW}No overclock Nvidia set${NOCOLOR}" && return
+	
+	
+	MEM=$(echo "$OC_NV" | jq -r '.memory')
+	CLOCK=$(echo "$OC_NV" | jq -r '.core')
+	PLIMIT=$(echo "$OC_NV" | jq -r '.pl')
+	FAN=$(echo "$OC_NV" | jq -r '.fan')
+	
+	
+	export DISPLAY=:0
+	export XAUTHORITY=/var/run/lightdm/root/:0
+
+	n=`gpu-detect NVIDIA`
+
+	if [ $n == 0 ]; then
+		echo "No NVIDIA cards detected, exiting"
+		return
+	fi
+	echo "Detected $n NVIDIA cards"
+
+	if [[ -z $MEM ]]; then
+		:
+	fi
+
+	if [[ -z $CLOCK ]] || [[ $CLOCK == "" ]]; then
+		:
+	fi
+
+	if [[ -z $FAN ]] || [[ $FAN == "" ]]; then
+		FAN=0
+	fi
+
+	if [[ -z $PLIMIT ]] || [[ $PLIMIT == "" ]]; then
+		PLIMIT=0
+	fi
+
+	[[ ! -z $CLOCK ]] &&
+	CLOCK=($CLOCK) &&
+	for (( i=${#CLOCK[@]}; i < $n; ++i )); do
+		CLOCK[$i]=${CLOCK[$i-1]}
+	done
+
+	[[ ! -z $MEM ]] &&
+	MEM=($MEM) &&
+	for (( i=${#MEM[@]}; i < $n; ++i )); do
+		MEM[$i]=${MEM[$i-1]}
+	done
+
+	[[ ! -z $FAN ]] &&
+	FAN=($FAN) &&
+	for (( i=${#FAN[@]}; i < $n; ++i )); do
+		FAN[$i]=${FAN[$i-1]}
+	done
+
+	[[ ! -z $PLIMIT ]] &&
+	PLIMIT=($PLIMIT) &&
+	for (( i=${#PLIMIT[@]}; i < $n; ++i )); do
+		PLIMIT[$i]=${PLIMIT[$i-1]}
+	done
+
+
+	echo "CLOCK  = ${CLOCK[*]}"
+	echo "MEM    = ${MEM[*]}"
+	echo "FAN    = ${FAN[*]}"
+	echo "PLIMIT = ${PLIMIT[*]}"
+
+	echo ""
+	nvidia-persistenced --persistence-mode
+	nvidia-smi -pm 1
+
+	echo ""
+
+	for (( i=0; i < $n; ++i )); do
+		nvidiainfo=`nvidia-smi --query-gpu=gpu_bus_id,gpu_name,power.default_limit,power.limit,power.draw --format=csv,noheader -i $i`
+		bus=`awk -F', ' '{print $1}' <<< $nvidiainfo`
+		name=`awk -F', ' '{print $2}' <<< $nvidiainfo`
+		plim_def=`awk -F', ' '{print $3}' <<< $nvidiainfo`
+		plim=`awk -F', ' '{print $4}' <<< $nvidiainfo`
+		power_draw=`awk -F', ' '{print $5}' <<< $nvidiainfo`
+
+		bus=`awk '{print substr($1,10); }' <<< $bus` #00000000:01:00.0
+
+		echo -e "${YELLOW}===${NOCOLOR} GPU ${CYAN}$i${NOCOLOR}, $bus ${GREEN}$name${NOCOLOR}, $power_draw / $plim (Default $plim_def) ${YELLOW}=== `date +"%T"`${NOCOLOR}"
+
+		if [[ ! -z $PLIMIT && ${PLIMIT[$i]} > 0 ]]; then
+			nvresult=`nvidia-smi -i $i -pl ${PLIMIT[$i]}`
+			[[ $? -ne 0 ]] && color=$RED || color=$NOCOLOR
+			nvresult=`echo "$nvresult" | grep -v "^$"`
+			echo -e "${color}$nvresult${NOCOLOR}"
+		else
+			if [[ $plim != $plim_def ]]; then
+				echo "Restoring default power limit"
+				nvidia-smi -i $i -pl `awk -F' W' '{print $1}' <<< $plim_def` | grep -v "^$"
+			fi
+		fi
+
+		args=
+		args+=" -a [gpu:$i]/GPUPowerMizerMode=1"
+
+		if [[ -z $FAN || ${FAN[$i]} == 0 ]]; then
+			args+=" -a [gpu:$i]/GPUFanControlState=0"
+		else
+			args+=" -a [gpu:$i]/GPUFanControlState=1"
+			args+=" -a [fan:$i]/GPUTargetFanSpeed=${FAN[$i]}"
+		fi
+
+		x=3
+		if [[ $name =~ "1050" ]]; then x=2
+		elif [[ $name =~ "P106-100" ]]; then x=2
+		elif [[ $name =~ "P106-090" ]]; then x=1
+		elif [[ $name =~ "P104-100" ]]; then x=1
+		fi
+
+		[[ ! -z $CLOCK ]] &&
+			args+=" -a [gpu:$i]/GPUGraphicsClockOffset[$x]=${CLOCK[$i]}"
+
+		[[ ! -z $MEM ]] &&
+			args+=" -a [gpu:$i]/GPUMemoryTransferRateOffset[$x]=${MEM[$i]}"
+
+
+		[[ ! -z $LOGO_BRIGHTNESS ]] &&
+			args+=" -a [gpu:$i]/GPULogoBrightness=$LOGO_BRIGHTNESS"
+
+		echo "nvidia-settings " $args
+			
+		if [[ ! -z $args ]]; then
+			nvresult=`nvidia-settings $args`
+			[[ $? -ne 0 ]] && color=$RED || color=$NOCOLOR
+			nvresult=`echo "$nvresult" | grep -v "^$"`
+			echo -e "${color}$nvresult${NOCOLOR}"
+		fi
+	done
+}
+
+
+function help() {
+	bname=`basename $0`
+	echo -e "Usage: ${CYAN}$bname NVIDIA|AMD|help${NOCOLOR}"
+	echo -e "If you run ${CYAN}$bname${NOCOLOR} without parameters overclock all gpu"
+}
+
+
+case $1 in
+	AMD)
+		AMD
+	;;
+	NVIDIA)
+		NVIDIA
+	;;
+	help)
+		help
+	;;
+	*)
+		AMD
+		NVIDIA
+	;;
+esac

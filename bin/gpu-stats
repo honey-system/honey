@@ -1,0 +1,266 @@
+#!/usr/bin/env bash
+
+RIG_CONF="/honey/conf/rig.conf"
+
+busIdTmp=()
+
+busids=()
+brand=()
+temps=()
+fans=()
+load=()
+power=()
+error=
+
+bus_temp_fan=()
+
+function putstats {
+	bus_temp_fan+=("$1;$2;$3;$4;$5;$6")
+}
+
+
+function internal_stats {
+	local cards=`lspci | grep -E "VGA|3D controller" | grep -vE "NVIDIA|AMD"`
+	while read -r line; do
+		[[ -z $line ]] && continue
+
+		busid=`echo $line | awk '{print $1}'`
+
+		[[ ! -z $busid ]] &&
+			putstats $busid "cpu" "0" "0" "0" "0"
+	done <<< "$cards"
+}
+
+function detect_card_ids {
+	local cards=`lspci | grep -E "VGA|3D controller" | grep -E "NVIDIA|AMD"`
+	while read -r line; do
+		[[ -z $line ]] && continue
+
+		busid=`echo $line | awk '{print $1}' | awk -F':' '{print $1}' | sed 's/^0*//'`
+
+		[[ ! -z $busid ]] &&
+			busIdTmp+=($busid)
+	done <<< "$cards"
+}
+
+function amd_stats {
+
+	for hwmondir in /sys/class/drm/card*/device/hwmon/hwmon*/ ; do
+		[[ ! -e $hwmondir ]] && continue
+
+		[[ $hwmondir =~ \/card([0-9a-z]+)\/ ]]
+
+		if [[ -n ${BASH_REMATCH[1]} ]]; then
+			cardno=${BASH_REMATCH[1]}
+		else
+			echo "$0: Unknown card number in $hwmondir"
+			continue
+		fi
+
+		busid=`realpath /sys/class/drm/card$cardno | rev | cut -d '/' -f 3 | rev | awk '{print tolower($0)}'`
+		busid=${busid#0000:} 
+
+		speed="0"
+		[[ -e ${hwmondir}pwm1_max ]] && fanmax=`head -1 ${hwmondir}pwm1_max` || fanmax=0
+		if [ $fanmax -gt 0 ]; then
+			[[ -e ${hwmondir}pwm1 ]] && fan=`head -1 ${hwmondir}pwm1` || fan=0
+			speed=$(( fan * 100 / fanmax ))
+	
+		else
+			echo "Error: fanmax unknown for card $cardno" >&2
+		fi
+
+		temp="0"
+		if [[ -e ${hwmondir}temp1_input ]]; then
+			temp=`head -1 ${hwmondir}temp1_input`
+			temp=$(( temp / 1000 ))
+		else
+			echo "Error: temp unknown for card $cardno" >&2
+		fi
+
+
+		local power='0'
+		[[ -e /sys/kernel/debug/dri/$cardno/amdgpu_pm_info ]] &&
+			power=`cat /sys/kernel/debug/dri/$cardno/amdgpu_pm_info | grep -m1 '(average GPU)' | awk '{printf("%d", $1)}'`
+		[[ -z power ]] && power='0'
+
+
+		putstats $busid "amd" $temp $speed "0" "$power"
+
+	done
+}
+
+function nvidia_stats {
+	
+	stats=`timeout -s9 3 nvidia-smi --format=csv,noheader,nounits --query-gpu=temperature.gpu,fan.speed,gpu_bus_id,utilization.gpu,power.draw`
+
+	[[ $? > 0 ]] && return
+
+	[[ $stats =~ NVIDIA-SMI ]] && return
+
+	while read -r s; do
+		local busid=`awk -F', ' '{print tolower($3)}' <<< $s`
+		busid=${busid#00000000:} #trim prefix
+		local temp=`awk -F', ' '{print $1}' <<< $s`
+		local fan=`awk -F', ' '{print $2}' <<< $s`
+		local load=`awk -F', ' '{print $4}' <<< $s`
+		local power=`awk -F', ' '{printf("%d", $5)}' <<< $s`
+		[[ $power == "[Not Supported]" ]] && power="0"
+		putstats "$busid" "nvidia" "$temp" "$fan" "$load" "$power"
+	
+	done <<<"$stats"
+}
+
+
+function miner_stats {
+	. $RIG_CONF
+	
+	local miner=$(echo "$MINER" | jq -r '.honeyFile.nameInternal')
+	API_TIMEOUT=5
+
+	hash=0
+	total_hash=0
+	algo=	
+	case $miner in
+		claymore)
+			stats=`echo '{"id":0,"jsonrpc":"2.0","method":"miner_getstat2"}' | nc -w $API_TIMEOUT localhost 3333 | jq '.result'`
+			if [[ $? -ne 0  || -z $stats ]]; then
+				error="Miner not started"
+			else
+				total_hash=`echo $stats | jq -r '.[2]' | awk -F';' '{print $1}'`
+				hash=(`echo $stats | jq -r '.[3]' |  tr ';' '\n'  | jq .` )
+				minerBusId=(`echo $stats | jq -r '.[15]' |  tr ';' '\n'  | jq .`)
+				algo=`echo $stats | jq -r '.[0]'`
+			
+				array=()
+				aLen=${#busIdTmp[@]}
+				bLen=${#minerBusId[@]}
+				for (( i=0; i<$aLen; i++ )); do
+					index=-1
+					
+					for (( j=0; j<$bLen; j++ )); do
+					   if [[ "${minerBusId[$j]}" == "${busIdTmp[$i]}" ]]; then
+						   index=$j
+						   break
+					   fi
+					done
+					if [[ $index -eq -1 ]]; then
+						array+=("${busIdTmp[$i]};0")
+					else
+						array+=("${busIdTmp[$i]};${hash[$index]}")
+					fi
+				done
+				
+				arraySort=$(for s in "${array[@]}"; do echo "$s"; done | sort)
+				hash=()
+				for s in ${arraySort[*]}; do
+					plines=$(tr ';' '\n' <<< "$s")
+					readarray -t params <<< "$plines"
+					hash+=("${params[1]}")
+				done								
+				hash=`echo ${hash[@]} | tr ' ' '\n'  | jq --raw-input . | jq --slurp -c .`
+				
+			fi
+		;;
+		gminer)
+			stats=`curl --connect-timeout 2 --max-time $API_TIMEOUT --silent --noproxy '*' http://127.0.0.1:42010/stat`
+			if [[ $? -ne 0  || -z $stats ]]; then
+				echo -e "${YELLOW}Failed to read $miner stats from localhost:${MINER_API_PORT}${NOCOLOR}"
+			else
+				echo "$stats" | jq '.'
+				break
+				
+				total_hash=`echo $stats | jq -r '.[2]' | awk -F';' '{print $1}'`
+				hash=(`echo $stats | jq -r '.[3]' |  tr ';' '\n'  | jq .` )
+				minerBusId=(`echo $stats | jq -r '.[15]' |  tr ';' '\n'  | jq .`)
+				algo=`echo $stats | jq -r '.[0]'`
+				
+				
+				khs=`echo $stats | jq -r '.devices[].speed' | awk '{s+=$1} END {print s/1000}'` #sum up and convert to khs
+				local minerBusId=$(jq -r '[.devices[].bus_id[5:7]] | .[]' <<< "$stats")
+				local bus_numbers=$(echo "$bus_id_array" | awk '{printf("%d\n", "0x"$1)}' | jq -sc .)
+				local all_bus_ids_array=(`echo "$gpu_detect_json" | jq -r '[ . | to_entries[] | select(.value) | .value.busid [0:2] ] | .[]'`)
+				bus_id_array=`sed 's/\n/ /' <<< $bus_id_array`
+				fan=`sed 's/\n/ /' <<< $fan`
+				IFS=' ' read -r -a bus_id_array <<< "$bus_id_array"
+				IFS=' ' read -r -a fan <<< "$fan"
+				local fans_array=
+				for ((i = 0; i < ${#all_bus_ids_array[@]}; i++)); do
+					for ((j = 0; j < ${#bus_id_array[@]}; j++)); do
+						if [[ "$(( 0x${all_bus_ids_array[$i]} ))" -eq "$(( 0x${bus_id_array[$j]} ))" ]]; then
+							fans_array+=("${fan[$i]}")
+						fi
+					done
+				done
+
+				[[ -z $GMINER_ALGO ]] && GMINER_ALGO="144_5"
+
+				local temp=$(jq -c "[.temp$nvidia_indexes_array]" <<< $gpu_stats)
+
+				stats=$(jq -c --argjson temp "$temp" --argjson fan "`echo "${fans_array[@]}" | jq -s . | jq -c .`" \
+						--arg ac "$ac" --arg rj "$rj" \
+						--argjson bus_numbers "$bus_numbers" --arg algo "$EWBF_ALGO"  \
+						--arg ver `miner_ver` \
+					'{hs: [.devices[].speed], $temp, $fan,
+						uptime: .uptime, ar: [$ac, $rj], $bus_numbers, $algo, $ver}' <<< "$stats")
+			fi
+		;;
+		*)
+			error="Miner not defined"
+		;;
+	esac
+
+
+	[[ -z $hash ]] && hash=0
+	[[ -z $total_hash ]] && total_hash=0
+	[[ -z $algo ]] && algo=null
+
+}
+
+function all_stats {
+	detect_card_ids
+	internal_stats
+	amd_stats
+	nvidia_stats
+	miner_stats
+}
+
+
+all_stats
+
+sorted=$(for s in "${bus_temp_fan[@]}"; do echo "$s"; done | sort)
+
+while read -r s; do
+	plines=$(tr ';' '\n' <<< "$s")
+	readarray -t params <<< "$plines"
+	busids+=("${params[0]}")
+	brand+=("${params[1]}")
+	temps+=("${params[2]}")
+	fans+=("${params[3]}")
+	load+=("${params[4]}")
+	power+=("${params[5]}")
+done <<< "$sorted"
+
+jsontemps=`printf '%s\n' "${temps[@]}" | jq --raw-input . | jq --slurp -c .`
+jsonfans=`printf '%s\n' "${fans[@]}" | jq --raw-input . | jq --slurp -c .`
+jsonload=`printf '%s\n' "${load[@]}" | jq --raw-input . | jq --slurp -c .`
+jsonpower=`printf '%s\n' "${power[@]}" | jq --raw-input . | jq --slurp -c .`
+jsonbusids=`printf '%s\n' "${busids[@]}" | jq --raw-input . | jq --slurp -c .`
+jsonbrand=`printf '%s\n' "${brand[@]}" | jq --raw-input . | jq --slurp -c .`
+total_hash=`echo $total_hash | jq --raw-input .`
+total_power=`echo ${power[@]} | sed 's/ /\n/g' |  awk '{ sum += $1 } END { print sum }' | jq --raw-input .`
+
+
+jq -c -n \
+--arg error "$error" \
+--argjson temp "$jsontemps" \
+--argjson fan "$jsonfans" \
+--argjson load "$jsonload" \
+--argjson power "$jsonpower" \
+--argjson busids "$jsonbusids" \
+--argjson brand "$jsonbrand" \
+--argjson hash "$hash" \
+--argjson total_hash "$total_hash" \
+--argjson total_power "$total_power" \
+--arg algo "$algo" \
+'{$error, $temp, $fan, $load, $power, $busids, $brand, $hash, $total_hash, $total_power, $algo}'

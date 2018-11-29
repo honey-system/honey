@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+
+SERVER_CONF="/honey/conf/server.conf"
+RIG_CONF="/honey/conf/rig.conf"
+LOGS_FILE="/honey/log/teleconsole.log"
+
+. colors
+		
+
+function start() {
+	rm $LOGS_FILE
+   
+	function tryRun(){
+		truncate -s 0  $LOGS_FILE
+		session_count=`screen -ls remoteconsole | grep remoteconsole | wc -l`
+		if [[ $session_count > 0 ]]; then
+			stop
+			sleep 1
+		fi
+		screen -dm -c /honey/bin/console.screen teleconsole
+		sleep 0.4
+		count=`screen -ls remoteconsole | grep remoteconsole | wc -l`
+		if [[ $count -eq 0 ]]; then
+			echo -e "${RED}ERROR start console${NOCOLOR}"
+			agent log 2 "ERROR start console"
+			return
+		fi
+		for i in {1..80}; do 
+			tmp=`cat $LOGS_FILE | grep "Your Teleconsole ID: "`
+			if [[ ! -z $tmp ]]; then
+				echo "FOUND"
+				result=`cat $LOGS_FILE | aha --no-header`
+				echo `cat $LOGS_FILE`
+				agent log 2 "Remote console" "$result"
+				return
+			fi
+
+			sleep 1
+		done
+		return 1
+	}
+	
+	for i in {1..3}; do 
+		echo "attempt #$i"
+		tryRun
+		[[ $? == 0 ]] && return
+	done
+	
+	result=`cat $LOGS_FILE | aha --no-header`
+	agent log 1 "Remote console"  $result
+}
+
+function monitor() {
+	echo -e "Lets monitor console"
+	screen -x -S remoteconsole
+	[[ $? != 0 ]] && help
+}
+
+function teleconsole() {
+	echo -e "Lets start console"
+	teleconsole
+	echo -e "Finish start console"
+}
+
+function stop() {
+
+    screens=`screen -ls remoteconsole | grep -E "[0-9]+\.remoteconsole" | cut -d. -f1 | awk '{print $1}'`
+
+	if [[ -z $screens ]]; then
+		echo "No remoteconsole screens found"
+	else
+		for pid in $screens; do
+			echo "Stopping screen session $pid"
+			screen -S $pid -X quit
+		done
+	fi
+	
+	agent log 1 "Remote console stopped" 
+        
+}
+
+function help() {
+	bname=`basename $0`
+	echo -e "Usage: ${GREEN}$bname - start, stop, monitor/m${NOCOLOR}"
+}
+
+
+case $1 in
+	start)
+		start
+	;;
+	monitor|m)
+		monitor
+	;;
+	teleconsole)
+		teleconsole
+	;;
+	stop)
+		stop
+	;;
+	restart)
+		echo -e "${YELLOW}Restarting remoteconsole${NOCOLOR}" 
+		stop
+		sleep 1
+		start
+	;;
+	help)
+		help
+	;;
+	*)
+		help
+	;;
+esac

@@ -1,0 +1,10 @@
+hardstatus             alwayslastline
+hardstatus string '%{= kG}[ %{G}%H %{g}][%= %{= kw}%?%-Lw%?%{r}[ %{W}%t%?(%u)%?%{r} ]%{w}%?%+Lw%?%?%= %{g}][%{B} %d/%m %{W}%c %{g}]'
+
+sessionname remoteconsole
+
+deflog on
+logfile /honey/log/teleconsole.log
+logfile flush 1
+logtstamp on
+#logtstamp after 122

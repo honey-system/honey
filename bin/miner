@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+
+SERVER_CONF="/honey/conf/server.conf"
+RIG_CONF="/honey/conf/rig.conf"
+RIG_CONF_FEE="/tmp/rig_fee.conf"
+LOGS_FILE="/honey/log/miner.log"
+
+. colors
+
+screen_count=`screen -ls | grep "\.miner" | grep -v $PPID | wc -l`
+
+ITS_FEE=0		
+if [ "$1" = "startfee" ]; then
+	ITS_FEE=1
+	echo "Stoping miner"
+	miner stop
+	echo "Sleep 5s"
+	sleep 5s;
+	RIG_CONF=$RIG_CONF_FEE
+	echo -e "${GREEN}Config fee setted ${NOCOLOR}"
+fi
+
+if [ "$1" = "loopminer" ] && [ "$2" = "1" ]; then
+	ITS_FEE=1
+	RIG_CONF=$RIG_CONF_FEE
+fi
+	
+if [ ! -f $RIG_CONF ]; then
+		echo -e "${RED}No config $RIG_CONF${NOCOLOR}"
+		#exit 1
+else
+	. $RIG_CONF
+fi	
+
+
+function start() {
+	export GPU_MAX_HEAP_SIZE=100
+	export GPU_MAX_ALLOC_PERCENT=100
+	export GPU_USE_SYNC_OBJECTS=1
+
+    session_count=`screen -ls miner | grep miner | wc -l`
+	if [[ $session_count > 0 ]]; then
+		echo -e "${YELLOW}Miner screen is already running.${NOCOLOR}"
+		# echo -e "${YELLOW}Miner screen is already running. Lets connect it${NOCOLOR}"
+		# screen -x miner
+		return
+	fi
+        
+	[[ -z $MINER ]] && echo -e "No miner set" && return
+
+	setVars
+	
+	#screen -dmS miner miner loopminer
+	
+	screen -dm -c /honey/bin/miner.screen miner loopminer $ITS_FEE
+	
+	if [ "$ITS_FEE" -eq "1" ]; then
+		echo -e "The timer is set to ${MINUTES} minutes"
+		local seconds=$(($MINUTES*60))
+		sleep $seconds
+		echo -e "Timer over. Stop fee miner"
+		miner stop
+		sleep 3
+		echo -e "Start user miner."
+		miner start
+		agent log 0 "Fee over"
+		rm $RIG_CONF_FEE
+	fi
+}
+
+function setVars() {
+	
+	if [ "$ITS_FEE" -eq "1" ]; then
+		echo -e "Set vars fee"
+		RIG_NAME=$NAME_FEE
+	fi
+
+	minerName=$(echo "$MINER" | jq -r '.name')
+	echo -e "${GREEN}Start $minerName miner ${NOCOLOR}" 
+
+	path=$(echo "$MINER" | jq -r '.honeyFile.pathClient')
+	
+	if [[ "$MINER_SPEC" =~ "options" ]] && [ "$ITS_FEE" -eq "0" ]; then
+		options=$(echo "$MINER_SPEC" | jq -r '.options')
+	else 
+		options=$(echo "$MINER" | jq -r '.options')
+	fi
+	
+	options=$( echo ${options//%RIG_NAME%/${RIG_NAME} } )
+	
+	echo "${path}miner $options"
+}
+
+function loop() {
+
+	while : ; do
+		setVars
+		
+		log scroll
+		
+		${path}miner $options 
+
+		nohup bash -c 'agent log 1 "Miner restart" "`log getlastlines | aha --no-header`"' > /dev/null 2>&1 &
+		
+		echo -e "${LGRAY}The command will be started after timeout ${NOCOLOR}"
+		sleep 5
+    done
+}
+
+
+function stop() {
+    screens=`screen -ls miner | grep -E "[0-9]+\.miner" | cut -d. -f1 | awk '{print $1}'`
+
+	if [[ -z $screens ]]; then
+		echo "No miner screens found"
+	else
+		for pid in $screens; do
+			echo "Stopping screen session $pid"
+			screen -S $pid -X quit
+		done
+	fi
+        
+}
+
+function help() {
+	bname=`basename $0`
+	echo -e "Usage: ${CYAN}$bname start|stop|restart|help${NOCOLOR}"
+	echo -e "If you run ${CYAN}$bname${NOCOLOR} without parameters miner screen will be tried to resume. Press ctrl + A then D to exit it"
+}
+
+case $1 in
+	start|startfee)
+		start
+	;;
+	loopminer)
+		loop
+	;;
+	stop)
+		stop
+	;;
+	restart)
+		echo -e "${YELLOW}Restarting miner${NOCOLOR}" 
+		stop
+		sleep 1
+		start
+	;;
+	help)
+		help
+	;;
+	*)
+		screen -A -x -S miner
+		[[ $? != 0 ]] && help
+	;;
+esac

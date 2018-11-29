@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+
+RIG_CONF="/honey/conf/rig.conf"
+
+. colors
+
+export DISPLAY=:0
+
+DELAY=5
+MIN_TEMP=60
+MAX_TEMP=80
+		
+if [ ! -f $RIG_CONF ]; then
+	echo -e "${RED}No config $RIG_CONF${NOCOLOR}"
+	#exit 1
+else
+	. $RIG_CONF
+fi
+
+function start() {
+	session_count=`screen -ls fan | grep fan | wc -l`
+	if [[ $session_count > 0 ]]; then
+		echo -e "${YELLOW}Fan screen is already running${NOCOLOR}"
+		return
+	fi
+	
+	screen -dmS fan fan loopfan
+	echo -e "${GREEN}Auto fan started${NOCOLOR}"
+}
+
+function loop() {
+	CARDS_NUM=`nvidia-smi -L | wc -l`
+
+	echo "Found ${CARDS_NUM} GPU(s) : MIN ${MIN_TEMP}°C - ${MAX_TEMP}°C MAX : Delay ${DELAY}s"
+
+	for ((i=0; i<$CARDS_NUM; i++))
+	do
+		nvidia-settings -a [gpu:$i]/GPUFanControlState=1 > /dev/null
+		if [ "$?" -ne 0 ]; then
+			exit 1;
+		fi
+	done
+
+	echo "GPUFanControlState set to 1 for all cards"
+
+	while true
+	do
+		echo "$(date +"%d/%m/%y %T")"
+			for ((i=0; i<$CARDS_NUM; i++))
+				do
+				GPU_TEMP=`nvidia-smi -i $i --query-gpu=temperature.gpu --format=csv,noheader`
+				if [[ $GPU_TEMP < $MIN_TEMP ]]
+				then
+				FAN_SPEED=0
+				elif [[ $GPU_TEMP > $MAX_TEMP ]]
+				then
+				FAN_SPEED=100
+				else
+				FAN_SPEED=$(( ($GPU_TEMP - $MIN_TEMP)*100/($MAX_TEMP - $MIN_TEMP) ))
+				fi
+				nvidia-settings -a [fan:$i]/GPUTargetFanSpeed=$FAN_SPEED > /dev/null
+				echo "GPU${i} ${GPU_TEMP}°C -> ${FAN_SPEED}%"
+			done
+		sleep $DELAY
+	done
+}
+
+
+function stop() {
+
+    screens=`screen -ls fan | grep -E "[0-9]+\.fan" | cut -d. -f1 | awk '{print $1}'`
+
+	if [[ -z $screens ]]; then
+		echo "No fan screens found"
+	else
+		for pid in $screens; do
+			echo "Stopping screen session $pid"
+			screen -S $pid -X quit
+		done
+	fi
+        
+}
+
+function help() {
+	bname=`basename $0`
+	echo -e "Usage: ${CYAN}$bname start|stop|restart|help${NOCOLOR}"
+	echo -e "If you run ${CYAN}$bname${NOCOLOR} without parameters fan screen will be tried to resume. Press ctrl + A then D to exit it"
+}
+
+
+case $1 in
+	start)
+		start
+	;;
+	loopfan)
+		loop
+	;;
+	stop)
+		stop
+	;;
+	restart)
+		echo -e "${YELLOW}Restarting fan${NOCOLOR}" 
+		stop
+		sleep 1
+		start
+	;;
+	help)
+		help
+	;;
+	*)
+		screen -A -x -S fan
+		[[ $? != 0 ]] && help
+	;;
+esac

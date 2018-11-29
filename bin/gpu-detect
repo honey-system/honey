@@ -1,0 +1,130 @@
+#!/bin/bash
+
+if [[ $# < 1 ]]; then
+	echo "Usage: $0 NVIDIA|AMD|list|listjson|listnvidia"
+	exit 1
+fi
+
+[ -t 1 ] && . colors
+
+
+if [[ $1 == "list" || $1 == "listjson" ]]; then
+	
+	if [[ ! -z $2 && $2 == "AMD" ]]; then
+		list=`lspci | grep -E "VGA|3D controller" | grep "Advanced Micro Devices" | grep -v "RS880"`
+	elif [[ ! -z $2 && $2 == "NVIDIA" ]]; then
+		list=`lspci | grep -E "VGA|3D controller" | grep "NVIDIA" | grep -v "nForce"`
+	else
+		list=`lspci | grep -E "VGA|3D controller"`
+	fi
+	gpus=()
+
+	GPU_COUNT_AMD=`gpu-detect AMD`
+	if [[ $GPU_COUNT_AMD > 0 ]]; then
+		amdmeminfo=`amdmeminfo -q -s -n`
+		if [[ `echo "$amdmeminfo" | wc -l` != $GPU_COUNT_AMD ]]; then
+			sleep 0.1
+			amdmeminfo=`amdmeminfo -q -s -n`
+		fi
+	fi
+
+	gpu_brand_i=-1
+	while read -r s; do
+		[[ -z $s ]] && continue
+		unset gputype
+		[[ $s =~ "NVIDIA" && ! $s =~ "nForce" ]] && gputype="NVIDIA" && COLOR=$GREEN && gpu_brand_i=$((gpu_brand_i+1))
+		[[ $s =~ "Advanced Micro Devices" ]] && gputype="AMD" && COLOR=$RED && gpu_brand_i=$((gpu_brand_i+1))
+
+		re='^([0-9a-z\:\.]+) (VGA compatible|3D) controller: (.*)$'
+		[[ $s =~ $re ]]
+		busid=${BASH_REMATCH[1]}
+		name=${BASH_REMATCH[3]}
+		additional=""
+		
+		subvendor=$(lspci -vmms $busid | grep SVendor | sed  's/SVendor:\t//') #Get vendor info
+		
+		if [[ $gputype == "AMD" ]]; then
+		
+			meminfopci=${BASH_REMATCH[1]}
+			meminfopci=${meminfopci%$":00.0"} #cut out suffix
+			meminfopci=:${meminfopci}.00.0:
+			meminfo=$(grep "$meminfopci" <<< "$amdmeminfo")
+			if [[ ! -z $meminfo ]]; then
+				_IFS=$IFS && IFS=":"
+				read -a meminfo <<< "$meminfo"
+				IFS=$_IFS
+				name=${meminfo[2]}
+
+				mem=`dmesg | grep -oE "amdgpu 0000:${busid}: VRAM:\s.*" | sed -n 's/.*VRAM:\s\([0-9MG]\+\).*/\1/p'`
+
+				additional=" ($mem, ${meminfo[3]}, ${meminfo[4]})"
+				if [[ $1 == "listjson" ]]; then
+					gpujson=`jq -n -c --arg busid "$busid" --arg name "$name" --arg brand "amd" --arg subvendor "$subvendor" \
+						--arg vbios "${meminfo[3]}" --arg mem_type "${meminfo[4]}" \
+						'{$busid, $name, $brand, $subvendor, $vbios, $mem_type}'`
+					[[ ! -z $mem ]] && gpujson=`echo $gpujson | jq -c --arg mem "$mem" '. + {$mem}'`
+					gpus+=("$gpujson")
+					continue
+				fi
+			fi
+		elif [[ $gputype == "NVIDIA" ]]; then
+			nvidiainfo=`nvidia-smi --query-gpu=gpu_bus_id,gpu_name,memory.total,power.min_limit,power.default_limit,power.max_limit --format=csv,noheader | grep -i "00000000:$busid, "`
+			if [[ ! -z $nvidiainfo ]]; then
+				
+				name=`awk -F', ' '{print $2}' <<< $nvidiainfo`
+				mem=`awk -F', ' '{print $3}' <<< $nvidiainfo`
+				plim_min=`awk -F', ' '{print $4}' <<< $nvidiainfo`
+				plim_def=`awk -F', ' '{print $5}' <<< $nvidiainfo`
+				plim_max=`awk -F', ' '{print $6}' <<< $nvidiainfo`
+
+				vbios=""
+				[[ -e /proc/driver/nvidia/gpus/0000:$busid/information ]] &&
+					vbios=`cat /proc/driver/nvidia/gpus/0000:$busid/information | grep "Video BIOS" | awk '{print $3}'`
+
+				additional=" ($mem, $plim_def)"
+				if [[ $1 == "listjson" ]]; then
+					gpus+=(`jq -n -c --arg busid "$busid" --arg name "$name" --arg brand "nvidia" --arg subvendor "$subvendor" \
+						--arg mem "$mem" --arg vbios "$vbios" \
+						--arg plim_min "$plim_min" --arg plim_def "$plim_def" --arg plim_max "$plim_max" \
+						'{$busid, $name, $brand, $subvendor, $mem, $vbios, $plim_min, $plim_def, $plim_max}'`)
+					continue
+				fi
+			fi
+		else
+			COLOR=$YELLOW
+		fi
+
+		if [[ $1 == "listjson" ]]; then
+			gpus+=(`jq -n -c --arg busid "$busid" --arg name "$name" --arg brand "cpu" '{$busid, $name, $brand}'`)
+			continue
+		fi
+
+		[[ $gpu_brand_i -ge 0 ]] && gpu_index=`printf "%2d" $gpu_brand_i` || gpu_index="  "
+		echo -e "${BLUE}${gpu_index}${NOCOLOR} $busid ${COLOR}$name${NOCOLOR}$additional"
+	done <<<"$list"
+
+	if [[ $1 == "listjson" ]]; then
+		echo "${gpus[@]}" | jq --slurp .
+	fi
+
+
+	exit 0
+elif [[ $1 == "listnvidia" ]]; then
+	list=`nvidia-smi --query-gpu=gpu_bus_id,gpu_name --format=csv,noheader`
+	while read -r s; do
+		echo $s | sed -e "s/^00000000://" | sed -e "s/,\s/ /"
+	done <<<"$list"
+	exit 0
+elif [[ $1 == "AMD" ]]; then
+	lspci | grep -E "VGA|3D controller" | grep "Advanced Micro Devices" | grep -v "RS880" | wc -l
+elif [[ $1 == "AMD_FIRST" ]]; then
+	lspci | grep -E "VGA|3D controller" | head -n 1 | grep "Advanced Micro Devices" | grep -v "RS880" | wc -l
+elif [[ $1 == "NVIDIA" ]]; then
+	lspci | grep -E "VGA|3D controller" | grep "NVIDIA" | grep -v "nForce" | wc -l
+elif [[ $1 == "NVIDIA_FIRST" ]]; then
+	lspci | grep -E "VGA|3D controller" | head -n 1 | grep "NVIDIA" | grep -v "nForce" | wc -l
+else
+	lspci | grep -E "(VGA|3D controller).*$1" | wc -l
+fi
+
+

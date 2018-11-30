@@ -52,7 +52,7 @@ function loopMiner() {
 				events+='/Pool sent wrong data/ { system("watcher c error") } '
 			;;
 			*)
-				events+='/error/ { system("watcher c restartminer") } '
+				events+='/error/ { system("watcher c error") } '
 			;;
 		esac
 		#2>/dev/null

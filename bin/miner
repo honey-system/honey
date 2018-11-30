@@ -79,6 +79,7 @@ function setVars() {
 	echo -e "${GREEN}Start $minerName miner ${NOCOLOR}" 
 
 	path=$(echo "$MINER" | jq -r '.honeyFile.pathClient')
+	systemOptions=$(echo "$MINER" | jq -r '.honeyFile.options')
 	
 	if [[ "$MINER_SPEC" =~ "options" ]] && [ "$ITS_FEE" -eq "0" ]; then
 		options=$(echo "$MINER_SPEC" | jq -r '.options')
@@ -88,7 +89,7 @@ function setVars() {
 	
 	options=$( echo ${options//%RIG_NAME%/${RIG_NAME} } )
 	
-	echo "${path}miner $options"
+	echo "${path}miner $options $systemOptions"
 }
 
 function loop() {
@@ -98,7 +99,7 @@ function loop() {
 		
 		log scroll
 		
-		${path}miner $options 
+		${path}miner $options $systemOptions
 
 		nohup bash -c 'agent log 1 "Miner restart" "`log getlastlines | aha --no-header`"' > /dev/null 2>&1 &
 		

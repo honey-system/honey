@@ -148,7 +148,8 @@ function upgrade() {
 				agent restart
 				miner start	
 				agent log 2 "Upgraded"
-			' > /dev/null 2>&1 &
+			' > /honey/log/upgrade.log 2>&1 &
+	echo -e "${GREEN}Upgrade command send${NOCOLOR} - see result in site into log"
 }
 
 function savePPTables() {

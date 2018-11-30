@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 RIG_CONF="/honey/conf/rig.conf"
+RIG_CONF_FEE="/tmp/rig_fee.conf"
 
 busIdTmp=()
 
@@ -113,12 +114,17 @@ function nvidia_stats {
 
 
 function miner_stats {
-	. $RIG_CONF
+	
+	if [ -e $RIG_CONF_FEE ]; then
+		. $RIG_CONF_FEE
+	else 
+		. $RIG_CONF
+	fi
 	
 	local miner=$(echo "$MINER" | jq -r '.honeyFile.nameInternal')
 	API_TIMEOUT=5
 
-	hash=0
+	hash=()
 	total_hash=0
 	algo=	
 	case $miner in
@@ -127,7 +133,7 @@ function miner_stats {
 			if [[ $? -ne 0  || -z $stats ]]; then
 				error="Miner not started"
 			else
-				total_hash=`echo $stats | jq -r '.[2]' | awk -F';' '{print $1}'`
+				total_hash=`echo $stats | jq -r '.[2]' | awk -F';' '{print $1 * 1000}'`
 				hash=(`echo $stats | jq -r '.[3]' |  tr ';' '\n'  | jq .` )
 				minerBusId=(`echo $stats | jq -r '.[15]' |  tr ';' '\n'  | jq .`)
 				algo=`echo $stats | jq -r '.[0]'`
@@ -156,53 +162,99 @@ function miner_stats {
 				for s in ${arraySort[*]}; do
 					plines=$(tr ';' '\n' <<< "$s")
 					readarray -t params <<< "$plines"
-					hash+=("${params[1]}")
+					let value=${params[1]}*1000
+					hash+=("$value")
 				done								
 				hash=`echo ${hash[@]} | tr ' ' '\n'  | jq --raw-input . | jq --slurp -c .`
 				
 			fi
 		;;
 		gminer)
-			stats=`curl --connect-timeout 2 --max-time $API_TIMEOUT --silent --noproxy '*' http://127.0.0.1:42010/stat`
+			stats=`curl --connect-timeout 2 --max-time $API_TIMEOUT --silent --noproxy '*' http://127.0.0.1:666/stat`
 			if [[ $? -ne 0  || -z $stats ]]; then
 				echo -e "${YELLOW}Failed to read $miner stats from localhost:${MINER_API_PORT}${NOCOLOR}"
 			else
-				echo "$stats" | jq '.'
-				break
+								
+				total_hash=`echo $stats | jq -r '.devices[].speed' | awk '{s+=$1} END {print s}'`
+				hash=(` echo $stats | jq -r '.devices[].speed' `)
+				minerBusId=(` echo $stats | jq -r '[.devices[].bus_id[5:7]] | .[]' | sed 's/^0*//' `)
+				algo=`echo $stats | jq -r '.algorithm'`
 				
-				total_hash=`echo $stats | jq -r '.[2]' | awk -F';' '{print $1}'`
-				hash=(`echo $stats | jq -r '.[3]' |  tr ';' '\n'  | jq .` )
-				minerBusId=(`echo $stats | jq -r '.[15]' |  tr ';' '\n'  | jq .`)
-				algo=`echo $stats | jq -r '.[0]'`
-				
-				
-				khs=`echo $stats | jq -r '.devices[].speed' | awk '{s+=$1} END {print s/1000}'` #sum up and convert to khs
-				local minerBusId=$(jq -r '[.devices[].bus_id[5:7]] | .[]' <<< "$stats")
-				local bus_numbers=$(echo "$bus_id_array" | awk '{printf("%d\n", "0x"$1)}' | jq -sc .)
-				local all_bus_ids_array=(`echo "$gpu_detect_json" | jq -r '[ . | to_entries[] | select(.value) | .value.busid [0:2] ] | .[]'`)
-				bus_id_array=`sed 's/\n/ /' <<< $bus_id_array`
-				fan=`sed 's/\n/ /' <<< $fan`
-				IFS=' ' read -r -a bus_id_array <<< "$bus_id_array"
-				IFS=' ' read -r -a fan <<< "$fan"
-				local fans_array=
-				for ((i = 0; i < ${#all_bus_ids_array[@]}; i++)); do
-					for ((j = 0; j < ${#bus_id_array[@]}; j++)); do
-						if [[ "$(( 0x${all_bus_ids_array[$i]} ))" -eq "$(( 0x${bus_id_array[$j]} ))" ]]; then
-							fans_array+=("${fan[$i]}")
-						fi
+				array=()
+				aLen=${#busIdTmp[@]}
+				bLen=${#minerBusId[@]}
+				for (( i=0; i<$aLen; i++ )); do
+					index=-1
+					
+					for (( j=0; j<$bLen; j++ )); do
+					   if [[ "${minerBusId[$j]}" == "${busIdTmp[$i]}" ]]; then
+						   index=$j
+						   break
+					   fi
 					done
+					if [[ $index -eq -1 ]]; then
+						array+=("${busIdTmp[$i]};0")
+					else
+						array+=("${busIdTmp[$i]};${hash[$index]}")
+					fi
 				done
-
-				[[ -z $GMINER_ALGO ]] && GMINER_ALGO="144_5"
-
-				local temp=$(jq -c "[.temp$nvidia_indexes_array]" <<< $gpu_stats)
-
-				stats=$(jq -c --argjson temp "$temp" --argjson fan "`echo "${fans_array[@]}" | jq -s . | jq -c .`" \
-						--arg ac "$ac" --arg rj "$rj" \
-						--argjson bus_numbers "$bus_numbers" --arg algo "$EWBF_ALGO"  \
-						--arg ver `miner_ver` \
-					'{hs: [.devices[].speed], $temp, $fan,
-						uptime: .uptime, ar: [$ac, $rj], $bus_numbers, $algo, $ver}' <<< "$stats")
+				
+				arraySort=$(for s in "${array[@]}"; do echo "$s"; done | sort)
+				hash=()
+				for s in ${arraySort[*]}; do
+					plines=$(tr ';' '\n' <<< "$s")
+					readarray -t params <<< "$plines"
+					
+					#local resultValue=`echo ${params[1]}/1000 | jq -nf /dev/stdin`
+					# echo "$resultValue"
+					hash+=("${params[1]}")
+				done								
+				hash=`echo ${hash[@]} | tr ' ' '\n'  | jq --raw-input . | jq --slurp -c .`
+				
+			fi
+		;;
+		trex)
+			stats=`curl --connect-timeout 2 --max-time $API_TIMEOUT --silent --noproxy '*' localhost:4067/summary`
+			if [[ $? -ne 0  || -z $stats ]]; then
+				echo -e "${YELLOW}Failed to read $miner stats from localhost:${MINER_API_PORT}${NOCOLOR}"
+			else
+								
+				total_hash=`echo $stats | jq -r '.gpus[].hashrate' | awk '{s+=$1} END {print s}'`
+				hash=(` echo $stats | jq -r '.gpus[].hashrate' `)
+				minerBusId=(` gpu-detect listjson | jq -r '.[] | select(.brand=="nvidia") | .busid' | cut -d ':' -f 1 | sed 's/^0*//' `)
+				algo=`echo $stats | jq -r '.algorithm'`
+				
+				array=()
+				aLen=${#busIdTmp[@]}
+				bLen=${#minerBusId[@]}
+				for (( i=0; i<$aLen; i++ )); do
+					index=-1
+					
+					for (( j=0; j<$bLen; j++ )); do
+					   if [[ "${minerBusId[$j]}" == "${busIdTmp[$i]}" ]]; then
+						   index=$j
+						   break
+					   fi
+					done
+					if [[ $index -eq -1 ]]; then
+						array+=("${busIdTmp[$i]};0")
+					else
+						array+=("${busIdTmp[$i]};${hash[$index]}")
+					fi
+				done
+				
+				arraySort=$(for s in "${array[@]}"; do echo "$s"; done | sort)
+				hash=()
+				for s in ${arraySort[*]}; do
+					plines=$(tr ';' '\n' <<< "$s")
+					readarray -t params <<< "$plines"
+					
+					#local resultValue=`echo ${params[1]}/1000 | jq -nf /dev/stdin`
+					# echo "$resultValue"
+					hash+=("${params[1]}")
+				done								
+				hash=`echo ${hash[@]} | tr ' ' '\n'  | jq --raw-input . | jq --slurp -c .`
+				
 			fi
 		;;
 		*)
@@ -211,7 +263,7 @@ function miner_stats {
 	esac
 
 
-	[[ -z $hash ]] && hash=0
+	[[ -z $hash ]] && hash=()
 	[[ -z $total_hash ]] && total_hash=0
 	[[ -z $algo ]] && algo=null
 

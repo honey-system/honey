@@ -248,6 +248,14 @@ function loop {
 	[ ! -f $RIG_CONF ] && echo -e "No config $RIG_CONF" && return
 
 	gpu_stats=`gpu-stats`
+	if [[ "$?" != "0" ]]; then
+		rm $RIG_CONF_FEE #maybe when user update miner - rig fee exit and file not delete
+		gpu_stats=`gpu-stats`
+		if [[ "$?" != "0" ]]; then
+			echo -e "${RED}ERROR${NOCOLOR} get statistics" 
+			return 
+		fi
+	fi
 
 	local error=$(jq '.error' <<< $gpu_stats)
 	

@@ -257,13 +257,24 @@ function miner_stats {
 				
 			fi
 		;;
+		phoenix)
+			stats=`echo '{"id":0,"jsonrpc":"2.0","method":"miner_getstat2"}' | nc -w 1 localhost 3333 | jq '.result'`
+			if [[ $? -ne 0  || -z $stats ]]; then
+				error="Miner not started"
+			else
+				total_hash=`echo $stats | jq -r '.[2]' | awk -F';' '{print $1 * 1000}'`
+				hash=(` echo "$stats" | jq -r '.[3]' | tr ';' '\n' | jq -cs '.' `)
+				minerBusId=(`echo $stats | jq -r '.[15]' |  tr ';' '\n'  | jq .`)
+				algo=`echo $stats | jq -r '.[0]'`			
+			fi
+		;;
 		*)
 			error="Miner not defined"
 		;;
 	esac
 
 
-	[[ -z $hash ]] && hash=()
+	[[ -z $hash ]] && hash=("0")
 	[[ -z $total_hash ]] && total_hash=0
 	[[ -z $algo ]] && algo=null
 

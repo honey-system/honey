@@ -51,6 +51,10 @@ function loopMiner() {
 				events+='/incorrect share/ { system("watcher c error") } '
 				events+='/Pool sent wrong data/ { system("watcher c error") } '
 			;;
+			phoenix)
+				events+='/Thread(s) not responding. Restarting./ { system("watcher c error") } '
+				events+='/error/ { system("watcher c error") } '
+			;;
 			*)
 				events+='/error/ { system("watcher c error") } '
 			;;

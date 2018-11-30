@@ -172,6 +172,7 @@ function info() {
 	echo -e "${GREEN}honey sm${NOCOLOR} - stop monitor"
 	echo -e "${GREEN}log${NOCOLOR} - show current miner log"
 	echo -e "${GREEN}log last${NOCOLOR} - show previous miner log"
+	echo -e "${GREEN}honey hr${NOCOLOR} - use this to 100% reboot"
 	echo -e "-- the commands below apply deliberately --"
 	echo -e "${GREEN}honey updateconf${NOCOLOR} - update configuration from server"
 	echo -e "${GREEN}honey upgrade${NOCOLOR} - upgrade honey system to new version"
@@ -255,7 +256,7 @@ case $1 in
 		shift
 		convertToUnix $@
 	;;
-	hardreboot)
+	hardreboot|hr)
 		hardReboot
 	;;
 	expandspace)

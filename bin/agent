@@ -246,37 +246,38 @@ function loop {
 	/honey/bin/log removeminerlogs
 
 	[ ! -f $RIG_CONF ] && echo -e "No config $RIG_CONF" && return
-
-	gpu_stats=`gpu-stats`
+	errorGetStat=0
+	gpu_stats=`timeout 360 bash -c gpu-stats`
 	if [[ "$?" != "0" ]]; then
 		rm $RIG_CONF_FEE #maybe when user update miner - rig fee exit and file not delete
 		gpu_stats=`gpu-stats`
 		if [[ "$?" != "0" ]]; then
 			echo -e "${RED}ERROR${NOCOLOR} get statistics" 
-			return 
+			errorGetStat=1 
 		fi
 	fi
 
-	local error=$(jq '.error' <<< $gpu_stats)
-	
-	if [[ -z $error ]]; then
-		echo -e "${RED}ERROR:${NOCOLOR} $gpu_stats"
-	fi
-	local temp=$(jq '.temp' <<< $gpu_stats)
-	local fan=$(jq '.fan' <<< $gpu_stats)
-	local power=$(jq '.power' <<< $gpu_stats)
-	local busids=$(jq '.busids' <<< $gpu_stats)
-	local brand=$(jq '.brand' <<< $gpu_stats)
-	local hash=$(jq '.hash' <<< $gpu_stats)
-	local total_hash=$(jq '.total_hash' <<< $gpu_stats)
-	local total_power=$(jq '.total_power' <<< $gpu_stats)
-	local algo=$(jq '.algo' <<< $gpu_stats)
-	local cputemp=$( sensors -A | grep Core | awk '{print $3+0}'|  awk '{printf("%s", NR == 1 ? $0 : ", "$0);} END {printf("\n");}' )
-	local cpuavg=$( uptime | awk -F': ' '{print $2}' )
-	local df=$( df -h / | awk '{ print $4 }' | tail -n 1 | sed 's/%//' )
-	
-	# output to global state file - use for wd and monitor
-	cat > $RIG_STATE <<FILEEOF
+	if [[ "$errorGetStat" == "0" ]]; then
+		local error=$(jq '.error' <<< $gpu_stats)
+		
+		if [[ -z $error ]]; then
+			echo -e "${RED}ERROR:${NOCOLOR} $gpu_stats"
+		fi
+		local temp=$(jq '.temp' <<< $gpu_stats)
+		local fan=$(jq '.fan' <<< $gpu_stats)
+		local power=$(jq '.power' <<< $gpu_stats)
+		local busids=$(jq '.busids' <<< $gpu_stats)
+		local brand=$(jq '.brand' <<< $gpu_stats)
+		local hash=$(jq '.hash' <<< $gpu_stats)
+		local total_hash=$(jq '.total_hash' <<< $gpu_stats)
+		local total_power=$(jq '.total_power' <<< $gpu_stats)
+		local algo=$(jq '.algo' <<< $gpu_stats)
+		local cputemp=$( sensors -A | grep Core | awk '{print $3+0}'|  awk '{printf("%s", NR == 1 ? $0 : ", "$0);} END {printf("\n");}' )
+		local cpuavg=$( uptime | awk -F': ' '{print $2}' )
+		local df=$( df -h / | awk '{ print $4 }' | tail -n 1 | sed 's/%//' )
+		
+		# output to global state file - use for wd and monitor
+		cat > $RIG_STATE <<FILEEOF
 TOTAL_HASH=$total_hash
 TOTAL_POWER=$total_power
 TEMP_CPU="` echo $cputemp | sed 's/ //g' `"
@@ -287,31 +288,35 @@ POWER_GPU="` echo $power | sed 's/"//g; s/\n//g; s/ //g; s/\]//g; s/\[//g' `"
 DISK_FREE="$df"
 FILEEOF
 	
-	echo -e "prepare request"
-	echo -e ""
+		echo -e "prepare request"
+		echo -e ""
+		
+		minerRequest="null"
+		[[ -n $MINER ]] && minerRequest=$MINER
+		
+		request=$(
+		jq -n \
+		--arg numId "$RIG_ID" \
+		--arg password "$RIG_PASS" \
+		--arg miner "$minerRequest" \
+		--arg cputemp "$cputemp" \
+		--argjson temp "$temp" \
+		--argjson fan "$fan" \
+		--argjson power "$power" \
+		--argjson busids "$busids" \
+		--argjson hash "$hash" \
+		--argjson total_hash "$total_hash" \
+		--arg algo "$algo" \
+		--arg df "$df" \
+		--arg cpuavg "$cpuavg" \
+		'{
+			$numId, $password, $miner, $temp, $fan, $power, $busids, $hash, $total_hash, $algo, $df, $cpuavg, $cputemp
+		}'
+		)
 	
-	minerRequest="null"
-	[[ -n $MINER ]] && minerRequest=$MINER
-	
-	request=$(
-	jq -n \
-	--arg numId "$RIG_ID" \
-	--arg password "$RIG_PASS" \
-	--arg miner "$minerRequest" \
-	--arg cputemp "$cputemp" \
-	--argjson temp "$temp" \
-	--argjson fan "$fan" \
-	--argjson power "$power" \
-	--argjson busids "$busids" \
-	--argjson hash "$hash" \
-	--argjson total_hash "$total_hash" \
-	--arg algo "$algo" \
-	--arg df "$df" \
-	--arg cpuavg "$cpuavg" \
-	'{
-		$numId, $password, $miner, $temp, $fan, $power, $busids, $hash, $total_hash, $algo, $df, $cpuavg, $cputemp
-	}'
-	)
+	else
+		request=
+	fi
 	
 	echo $request | jq '.' -c
 	
@@ -330,8 +335,7 @@ FILEEOF
 	#echo $response 
 	
 	error=$(echo $response | jq '.error' --raw-output)
-	[[ ! -z $error && $error != "null" ]] && echo -e "${RED}ERROR:${NOCOLOR} `echo $response | jq '.error.message' -r`" && 
-		return $((1))
+	[[ ! -z $error && $error != "null" ]] && echo -e "${RED}ERROR:${NOCOLOR} `echo $response | jq '.error.message' -r`" #&& return $((1))
 	
 	echo "$response" | jq '.'
 	

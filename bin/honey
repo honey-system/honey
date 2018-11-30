@@ -112,7 +112,7 @@ function beforeCopy() {
 	agent stop
 	clearLogs
 	clearUserInfo
-	cat $RIG_CONF_EX > $RIG_CONF
+	cp $RIG_CONF_EX $RIG_CONF
 	echo -e "${GREEN}Ready to copy${NOCOLOR}" 
 }
 
@@ -121,6 +121,7 @@ function clearUserInfo() {
 	echo "" > /root/.bash_history
 	echo "" > /home/work/.bash_history
 	rm -rf /var/tmp/*
+	apt-get clean
 	
 	echo -e "${GREEN}User info clear ${NOCOLOR}" 
    

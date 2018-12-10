@@ -9,7 +9,7 @@ RIG_CONF_FEE="/tmp/rig_fee.conf"
 LOG="/honey/log/agent.log"
 LOG_FEE="/honey/log/fee.log"
 TMP_CONF="/tmp/tmp.rig.conf"
-DEBUG=1
+DEBUG=0
 
 API_TIMEOUT=15
 
@@ -443,7 +443,7 @@ FILEEOF
 
 			log 0 "Try starting fee"
 			echo "Try starting fee, see log by command \"log fee\"" 
-			nohup miner startfee &> $LOG_FEE &
+			miner startfee &> $LOG_FEE &
 		;;
 		exec)
 			exec=$(echo $task | jq '.payload.command' --raw-output)
@@ -716,6 +716,6 @@ case $1 in
 		help
 	;;
 	*)
-		monitor
+		help
 	;;
 esac

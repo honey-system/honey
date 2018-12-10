@@ -51,7 +51,7 @@ function preboot() {
 		echo "Edit xorg for AMD"
 		modprobe amdgpu
 		
-		if [ $GPU_COUNT_NVIDIA -eq 0 ]; then
+		if [[ $GPU_COUNT_NVIDIA -eq 0 ]]; then
 			echo "Copying xorg for AMD"
 			cp /honey/etc/xorg.conf.amd /etc/X11/xorg.conf
 		fi
@@ -113,6 +113,7 @@ function beforeCopy() {
 	clearLogs
 	clearUserInfo
 	cp $RIG_CONF_EX $RIG_CONF
+	rm /honey/tools &> /dev/null
 	echo -e "${GREEN}Ready to copy${NOCOLOR}" 
 }
 
@@ -169,7 +170,7 @@ function savePPTables() {
 function info() {
 	# echo -e "${GREEN}honey info${NOCOLOR} - this"
 	echo -e "${GREEN}miner start ${NOCOLOR} - start miner (or stop/restart)"
-	echo -e "${GREEN}honey monitor${NOCOLOR} ${YELLOW}or${NOCOLOR} ${GREEN}honey m${NOCOLOR} - start the whole system monitor"
+	echo -e "${GREEN}honey monitor${NOCOLOR} ${YELLOW}or${NOCOLOR} ${GREEN}honey m${NOCOLOR} - run full system monitor"
 	echo -e "${GREEN}honey sm${NOCOLOR} - stop monitor"
 	echo -e "${GREEN}log${NOCOLOR} - show current miner log"
 	echo -e "${GREEN}log last${NOCOLOR} - show previous miner log"
@@ -177,7 +178,7 @@ function info() {
 	echo -e "-- the commands below apply deliberately --"
 	echo -e "${GREEN}honey updateconf${NOCOLOR} - update configuration from server"
 	echo -e "${GREEN}honey upgrade${NOCOLOR} - upgrade honey system to new version"
-	echo -e "${GREEN}honey beforeCopy${NOCOLOR} - prepare system for copy"
+	echo -e "${GREEN}honey beforecopy${NOCOLOR} - prepare system for copy"
 	# echo -e "${GREEN}honey expandspace${NOCOLOR} - take all available space"
 
 }

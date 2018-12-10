@@ -2,6 +2,7 @@
 
 SERVER_CONF="/honey/conf/server.conf"
 RIG_CONF="/honey/conf/rig.conf"
+RIG_CONF_FEE="/tmp/rig_fee.conf"
 LOGS_FILE="/honey/log/miner.log"
 RIG_STATE="/tmp/state"
 TIME_SLEEP=10
@@ -32,7 +33,6 @@ function start() {
 	screen -dmS watchdog wd loop
 	sleep 0.3
 	count=`screen -ls watchdog | grep watchdog | wc -l`
-	#echo $count
 	if [[ $count -eq 0 ]]; then
 		echo -e "${RED}ERROR start watchdog${NOCOLOR}"
 	# else
@@ -79,7 +79,7 @@ function loop() {
 		[[ "$wdReboot" == "null" ]] && wdReboot=0 
 		[[ "$minHash" == "null" ]] && minHash=0
 		
-		if [[ "$wdEnabled" == false ]] || [[ $minHash -eq 0 ]]; then
+		if [[ "$wdEnabled" == false ]] || [[ -f "$RIG_CONF_FEE" ]] || [[ $minHash -eq 0 ]]; then
 			echo -e "${YELLOW}Watchdog not activated${NOCOLOR} see variable in config" 
 			sleep $TIME_SLEEP
 			nowGood

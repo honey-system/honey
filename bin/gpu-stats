@@ -124,12 +124,12 @@ function miner_stats {
 	local miner=$(echo "$MINER" | jq -r '.honeyFile.nameInternal')
 	API_TIMEOUT=5
 
-	hash=()
+	hash=
 	total_hash=0
 	algo=	
 	case $miner in
 		claymore)
-			stats=`echo '{"id":0,"jsonrpc":"2.0","method":"miner_getstat2"}' | nc -w $API_TIMEOUT localhost 3333 | jq '.result'`
+			stats=`echo '{"id":0,"jsonrpc":"2.0","method":"miner_getstat2"}' | nc -w $API_TIMEOUT localhost 2222 | jq '.result'`
 			if [[ $? -ne 0  || -z $stats ]]; then
 				error="Miner not started"
 			else
@@ -172,7 +172,7 @@ function miner_stats {
 		gminer)
 			stats=`curl --connect-timeout 2 --max-time $API_TIMEOUT --silent --noproxy '*' http://127.0.0.1:666/stat`
 			if [[ $? -ne 0  || -z $stats ]]; then
-				echo -e "${YELLOW}Failed to read $miner stats from localhost:${MINER_API_PORT}${NOCOLOR}"
+				error="Miner not started"
 			else
 								
 				total_hash=`echo $stats | jq -r '.devices[].speed' | awk '{s+=$1} END {print s}'`
@@ -216,7 +216,7 @@ function miner_stats {
 		trex)
 			stats=`curl --connect-timeout 2 --max-time $API_TIMEOUT --silent --noproxy '*' localhost:4067/summary`
 			if [[ $? -ne 0  || -z $stats ]]; then
-				echo -e "${YELLOW}Failed to read $miner stats from localhost:${MINER_API_PORT}${NOCOLOR}"
+				error="Miner not started"
 			else
 								
 				total_hash=`echo $stats | jq -r '.gpus[].hashrate' | awk '{s+=$1} END {print s}'`
@@ -274,7 +274,14 @@ function miner_stats {
 	esac
 
 
-	[[ -z $hash ]] && hash=("0")
+	if [[ -z $hash ]]; then
+		hash=() 
+		for item in ${busIdTmp[*]}
+		do
+			hash+=0
+		done
+		hash=`echo ${hash[@]} | tr ' ' '\n'  | jq --raw-input . | jq --slurp -c .`
+	fi
 	[[ -z $total_hash ]] && total_hash=0
 	[[ -z $algo ]] && algo=null
 

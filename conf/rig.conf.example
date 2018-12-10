@@ -1,8 +1,15 @@
 # Edit manual RIG_ID and RIG_PASS only
+
 # everything else is created automatically!
+
 # Example:
-#RIG_ID="10"
-#RIG_PASS="123456"
+
+# RIG_ID="10"
+
+# RIG_PASS="123456"
+
+
 
 RIG_ID=""
+
 RIG_PASS=""

@@ -53,7 +53,12 @@ function loopMiner() {
 			;;
 			phoenix)
 				events+='/Thread(s) not responding. Restarting./ { system("watcher c error") } '
-				events+='/error/ { system("watcher c error") } '
+			;;
+			trex)
+				events+='/Thread(s) not responding. Restarting./ { system("watcher c error") } '
+			;;
+			gminer)
+				events+='/Thread(s) not responding. Restarting./ { system("watcher c error") } '
 			;;
 			*)
 				events+='/error/ { system("watcher c error") } '

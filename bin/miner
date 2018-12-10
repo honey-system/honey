@@ -4,6 +4,7 @@ SERVER_CONF="/honey/conf/server.conf"
 RIG_CONF="/honey/conf/rig.conf"
 RIG_CONF_FEE="/tmp/rig_fee.conf"
 LOGS_FILE="/honey/log/miner.log"
+LOG_FEE="/honey/log/fee.log"
 
 . colors
 
@@ -12,12 +13,12 @@ screen_count=`screen -ls | grep "\.miner" | grep -v $PPID | wc -l`
 ITS_FEE=0		
 if [ "$1" = "startfee" ]; then
 	ITS_FEE=1
-	echo "Stoping miner"
-	miner stop
-	echo "Sleep 5s"
-	sleep 5s;
 	RIG_CONF=$RIG_CONF_FEE
 	echo -e "${GREEN}Config fee setted ${NOCOLOR}"
+	echo "Stoping miner"
+	miner stop
+	echo "Sleep 3s"
+	sleep 3s;
 fi
 
 if [ "$1" = "loopminer" ] && [ "$2" = "1" ]; then
@@ -63,6 +64,7 @@ function start() {
 		sleep 3
 		echo -e "Start user miner."
 		miner start
+		sleep 2
 		agent log 0 "Fee over"
 		rm $RIG_CONF_FEE
 	fi
@@ -88,6 +90,8 @@ function setVars() {
 	fi
 	
 	options=$( echo ${options//%RIG_NAME%/${RIG_NAME} } )
+	
+	[[ "$systemOptions" == "null" ]] && systemOptions=
 	
 	echo "${path}miner $options $systemOptions"
 }

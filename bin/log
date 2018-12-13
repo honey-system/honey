@@ -53,6 +53,10 @@ function preboot() {
 	less -R +G -f ${LOGS_DIR}honey_preboot.log
 }
 		
+function remoteconsole() {
+	tail -n 30 ${LOGS_DIR}teleconsole.log
+}
+		
 function getLastLines() {
 	compress #for send actual data - copy from buffre
 	tail -n 30 ${LOGS_DIR}miner.log
@@ -87,6 +91,9 @@ case $1 in
 	;;
 	preboot)
 		preboot
+	;;
+	remoteconsole|rc)
+		remoteconsole
 	;;
 	fee)
 		fee

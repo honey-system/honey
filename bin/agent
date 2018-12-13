@@ -387,8 +387,9 @@ function doTask(){
 		remoteconsole)
 			action=$(echo $task | jq '.payload.action' --raw-output)
 			echo "remoteconsole ${action}"
-			nohup bash -c "remoteconsole ${action}"
-			log 0 "Try starting console"
+			bash -c "remoteconsole ${action}" &
+			[[ "$action" == "start" ]] && log 0 "Try starting console"
+			[[ "$action" == "stop" ]] && log 0 "Try stoping console"
 		;;
 		fee)	
 
@@ -709,7 +710,7 @@ case $1 in
 	startloop)
 		startLoop
 	;;
-	monitor)
+	monitor|m)
 		monitor
 	;;
 	help)

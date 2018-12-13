@@ -92,9 +92,9 @@ function monitor() {
 
 	echo -e "Lets monitor"
 	tmux new-session \; \
-	send-keys 'honey loopcommand miner' C-m \; \
+	send-keys 'honey loopcommand miner monitor' C-m \; \
 	split-window -v \; \
-	send-keys 'honey loopcommand agent' C-m \; \
+	send-keys 'honey loopcommand agent monitor' C-m \; \
 	split-window -h \; \
 	send-keys 'honey info' C-m \; 
 }
@@ -258,7 +258,7 @@ case $1 in
 		shift
 		convertToUnix $@
 	;;
-	hardreboot|hr)
+	hardreboot|hr|reboot)
 		hardReboot
 	;;
 	expandspace)

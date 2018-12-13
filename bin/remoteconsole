@@ -14,7 +14,8 @@ function start() {
 		truncate -s 0  $LOGS_FILE
 		session_count=`screen -ls remoteconsole | grep remoteconsole | wc -l`
 		if [[ $session_count > 0 ]]; then
-			stop
+			echo -e "${YELLOW}Old console runing, try stop it${NOCOLOR}"
+			stop 1
 			sleep 1
 		fi
 		screen -dm -c /honey/bin/console.screen teleconsole
@@ -22,10 +23,10 @@ function start() {
 		count=`screen -ls remoteconsole | grep remoteconsole | wc -l`
 		if [[ $count -eq 0 ]]; then
 			echo -e "${RED}ERROR start console${NOCOLOR}"
-			agent log 2 "ERROR start console"
+			agent log 1 "ERROR start console" "`cat $LOGS_FILE | aha --no-header`"
 			return
 		fi
-		for i in {1..80}; do 
+		for i in {1..30}; do 
 			tmp=`cat $LOGS_FILE | grep "Your Teleconsole ID: "`
 			if [[ ! -z $tmp ]]; then
 				echo "FOUND"
@@ -63,7 +64,8 @@ function teleconsole() {
 }
 
 function stop() {
-
+	local withoutNotify=$1
+	
     screens=`screen -ls remoteconsole | grep -E "[0-9]+\.remoteconsole" | cut -d. -f1 | awk '{print $1}'`
 
 	if [[ -z $screens ]]; then
@@ -75,7 +77,7 @@ function stop() {
 		done
 	fi
 	
-	agent log 1 "Remote console stopped" 
+	[[ -z $withoutNotify ]] && agent log 1 "Remote console stopped" 
         
 }
 

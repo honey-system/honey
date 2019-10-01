@@ -3,7 +3,7 @@ server.conf
 *.log
 /miners/
 /tools
-
+.idea
 
 # From Windows
 $RECYCLE.BIN

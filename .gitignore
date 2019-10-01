@@ -1,0 +1,27 @@
+rig.conf
+server.conf
+*.log
+/miners/
+/tools
+
+
+# From Windows
+$RECYCLE.BIN
+System Volume Information
+$WINDOWS.~BT
+pagefile.sys
+desktop.ini
+
+# From OS X
+Icon?
+.Spotlight-V100
+.Trashes
+.DS_Store
+.fseventsd
+
+# From Linux
+lost+found
+.gvfs
+.local/share/trash
+.Trash-*
+
